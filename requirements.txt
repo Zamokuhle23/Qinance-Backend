@@ -1,5 +1,37 @@
+# Core Django
 django==5.1.4
 djangorestframework==3.15.2
+
+# JWT authentication
+djangorestframework-simplejwt==5.3.1
+
+# CORS
 django-cors-headers==4.6.0
+
+# WebSockets / async
 channels==4.2.0
 daphne==4.1.2
+
+# OCI Object Storage (S3-compatible)
+django-storages==1.14.4
+boto3==1.35.93
+
+# Environment variables
+python-dotenv==1.0.1
+
+# PostgreSQL (production)
+psycopg2-binary==2.9.10
+dj-database-url==2.3.0
+
+# Redis channel layer (production)
+channels-redis==4.2.0
+redis==5.2.1
+
+# Timezone support (compliance engine)
+pytz==2024.2
+
+# Firebase push notifications (optional — set FCM_CREDENTIALS_FILE in .env to enable)
+firebase-admin==6.5.0
+
+# TOTP / HOTP (used for device secret generation in sound payment)
+pyotp==2.9.0

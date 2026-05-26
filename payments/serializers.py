@@ -28,12 +28,20 @@ class CardDetailsFullSerializer(serializers.ModelSerializer):
 
 class CustomerSerializer(serializers.ModelSerializer):
     available_credit = serializers.ReadOnlyField()
-    minimum_payment = serializers.ReadOnlyField()
-    is_overdue = serializers.ReadOnlyField()
-    card = CardDetailsSerializer(read_only=True)
+    minimum_payment  = serializers.ReadOnlyField()
+    is_overdue       = serializers.ReadOnlyField()
+    card             = CardDetailsSerializer(read_only=True)
+    momo_number      = serializers.SerializerMethodField()
+
+    def get_momo_number(self, obj):
+        try:
+            acc = obj.momo_account
+            return acc.msisdn if acc.status == 'active' else None
+        except Exception:
+            return None
 
     class Meta:
-        model = Customer
+        model  = Customer
         fields = '__all__'
 
 
@@ -54,8 +62,9 @@ class CreditTransactionSerializer(serializers.ModelSerializer):
 
 
 class PaymentSessionSerializer(serializers.ModelSerializer):
-    merchant_name = serializers.CharField(source='merchant.name', read_only=True)
-    customer_phone = serializers.CharField(source='customer.phone', read_only=True)
+    merchant_name     = serializers.CharField(source='merchant.name',     read_only=True)
+    merchant_sound_id = serializers.IntegerField(source='merchant.sound_id', read_only=True)
+    customer_phone    = serializers.CharField(source='customer.phone',    read_only=True)
 
     class Meta:
         model = PaymentSession
@@ -75,26 +84,27 @@ class CreateSessionSerializer(serializers.Serializer):
     amount = serializers.DecimalField(max_digits=10, decimal_places=2)
 
 
+BANK_CHOICES = ['fnb', 'standard', 'nedbank', 'eswatini_bank', 'momo']
+
+
 class ConfirmPaymentSerializer(serializers.Serializer):
-    FUNDING_CHOICES = ['credit', 'bank', 'jit']
-    BANK_CHOICES = ['fnb', 'standard', 'nedbank', 'eswatini_bank']
+    FUNDING_CHOICES = ['credit', 'bank', 'jit', 'momo']
 
-    session_id = serializers.UUIDField()
+    session_id     = serializers.UUIDField()
     customer_phone = serializers.CharField(max_length=20)
-    funding_mode = serializers.ChoiceField(choices=FUNDING_CHOICES)
+    funding_mode   = serializers.ChoiceField(choices=FUNDING_CHOICES)
 
-    # Required only when funding_mode is 'bank' or 'jit'
-    bank = serializers.ChoiceField(choices=BANK_CHOICES, required=False, allow_blank=True)
-
-    # JIT — bank funds the card in real time
-    jit_bank = serializers.ChoiceField(choices=BANK_CHOICES, required=False, allow_blank=True)
+    bank           = serializers.ChoiceField(choices=BANK_CHOICES, required=False, allow_blank=True)
+    jit_bank       = serializers.ChoiceField(choices=BANK_CHOICES, required=False, allow_blank=True)
+    momo_number    = serializers.CharField(max_length=20, required=False, allow_blank=True)
 
 
 class RepaymentSerializer(serializers.Serializer):
     customer_phone = serializers.CharField(max_length=20)
-    amount = serializers.DecimalField(max_digits=10, decimal_places=2)
-    bank = serializers.ChoiceField(choices=['fnb', 'standard', 'nedbank', 'eswatini_bank'])
-    pay_full = serializers.BooleanField(default=False)
+    amount         = serializers.DecimalField(max_digits=10, decimal_places=2)
+    bank           = serializers.ChoiceField(choices=BANK_CHOICES)
+    pay_full       = serializers.BooleanField(default=False)
+    momo_number    = serializers.CharField(max_length=20, required=False, allow_blank=True)
 
 
 class FreezeCardSerializer(serializers.Serializer):
