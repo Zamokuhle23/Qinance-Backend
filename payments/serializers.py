@@ -23,7 +23,7 @@ class CardDetailsFullSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = CardDetails
-        fields = '__all__'
+        exclude = ['card_number', 'cvv']  # never expose full card number or CVV
 
 
 class CustomerSerializer(serializers.ModelSerializer):

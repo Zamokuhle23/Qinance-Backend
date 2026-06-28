@@ -175,7 +175,8 @@ class CardDetails(models.Model):
 
     @property
     def masked_number(self):
-        return f'**** **** **** {self.card_number[-4:]}'
+        from .compliance import mask_pan
+        return mask_pan(self.card_number)
 
     @property
     def expiry_display(self):

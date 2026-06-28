@@ -6,19 +6,31 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
 
 from payments.models import Merchant, Customer, CardDetails, CreditStatement, DebitMandate
+from users.models import User
 
 Merchant.objects.all().delete()
 Customer.objects.all().delete()
 
 merchants = [
-    {'name': 'Nhlangano Furniture', 'business_type': 'Furniture', 'phone': '+26876100001', 'location': 'Nhlangano'},
-    {'name': 'Manzini Hardware', 'business_type': 'Hardware', 'phone': '+26876100002', 'location': 'Manzini'},
-    {'name': 'Mbabane Pharmacy', 'business_type': 'Pharmacy', 'phone': '+26876100003', 'location': 'Mbabane'},
-    {'name': 'Siteki Clothing', 'business_type': 'Clothing', 'phone': '+26876100004', 'location': 'Siteki'},
-    {'name': "Pigg's Peak Agri", 'business_type': 'Agriculture', 'phone': '+26876100005', 'location': "Pigg's Peak"},
+    {'name': 'Nhlangano Furniture', 'business_type': 'Furniture', 'phone': '+26876100001', 'location': 'Nhlangano', 'is_active': True, 'kyc_approved': True},
+    {'name': 'Manzini Hardware', 'business_type': 'Hardware', 'phone': '+26876100002', 'location': 'Manzini', 'is_active': True, 'kyc_approved': True},
+    {'name': 'Mbabane Pharmacy', 'business_type': 'Pharmacy', 'phone': '+26876100003', 'location': 'Mbabane', 'is_active': True, 'kyc_approved': True},
+    {'name': 'Siteki Clothing', 'business_type': 'Clothing', 'phone': '+26876100004', 'location': 'Siteki', 'is_active': True, 'kyc_approved': True},
+    {'name': "Pigg's Peak Agri", 'business_type': 'Agriculture', 'phone': '+26876100005', 'location': "Pigg's Peak", 'is_active': True, 'kyc_approved': True},
 ]
-for m in merchants:
+for index, m in enumerate(merchants, start=1):
     Merchant.objects.create(**m)
+    user, _ = User.objects.update_or_create(
+        phone=m['phone'],
+        defaults={
+            'full_name': m['name'],
+            'email': f'merchant{index}@qinance.demo',
+            'kyc_status': 'approved',
+            'is_active': True,
+        },
+    )
+    user.set_pin('1234')
+    user.save(update_fields=['pin'])
 
 customers = [
     {'phone': '+26876200001', 'full_name': 'Sipho Dlamini', 'bank': 'fnb', 'credit_limit': 5000, 'current_balance': 1250},
@@ -57,8 +69,8 @@ for c in customers:
     # Create debit mandate
     DebitMandate.objects.create(customer=customer, bank=customer.bank)
 
-print(f"✓ Created {len(merchants)} merchants")
-print(f"✓ Created {len(customers)} customers with virtual cards")
+print(f"Created {len(merchants)} active merchants (demo PIN: 1234)")
+print(f"Created {len(customers)} customers with virtual cards")
 print("\nMerchant IDs:")
 for m in Merchant.objects.all():
     print(f"  {m.name}: {m.id}")

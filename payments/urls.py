@@ -5,6 +5,7 @@ urlpatterns = [
     # Merchants
     path('merchants/', views.MerchantListView.as_view()),
     path('merchants/<uuid:pk>/', views.MerchantDetailView.as_view()),
+    path('merchants/<uuid:merchant_id>/due-diligence/', views.MerchantDueDiligenceView.as_view()),
     path('merchants/<uuid:merchant_id>/latest-session/', views.MerchantLatestSessionView.as_view()),
 
     # Customers

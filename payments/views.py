@@ -134,6 +134,55 @@ class MerchantDetailView(APIView):
         return Response(MerchantSerializer(merchant).data)
 
 
+class MerchantDueDiligenceView(APIView):
+    """
+    Run due diligence checks on a merchant before activation.
+    Admin calls this when reviewing a new merchant signup.
+    """
+
+    def get(self, request, merchant_id):
+        try:
+            merchant = Merchant.objects.get(id=merchant_id)
+        except Merchant.DoesNotExist:
+            return Response({'error': 'Merchant not found'}, status=404)
+
+        from .compliance import run_merchant_due_diligence
+        approved, issues = run_merchant_due_diligence(merchant)
+
+        return Response({
+            'merchant_id':   str(merchant.id),
+            'merchant_name': merchant.name,
+            'approved':      approved,
+            'issues':        issues,
+        })
+
+    def post(self, request, merchant_id):
+        """Activate merchant if due diligence passes, or force-activate with override."""
+        try:
+            merchant = Merchant.objects.get(id=merchant_id)
+        except Merchant.DoesNotExist:
+            return Response({'error': 'Merchant not found'}, status=404)
+
+        from .compliance import run_merchant_due_diligence
+        approved, issues = run_merchant_due_diligence(merchant)
+        override = request.data.get('override', False)
+
+        if not approved and not override:
+            return Response({
+                'error':  'Due diligence failed',
+                'issues': issues,
+            }, status=400)
+
+        merchant.is_active    = True
+        merchant.kyc_approved = True
+        merchant.save()
+
+        return Response({
+            'message':  'Merchant activated',
+            'override': override and not approved,
+        })
+
+
 # ── Customers ─────────────────────────────────────────────────────────────────
 
 class CustomerListView(APIView):
