@@ -55,6 +55,8 @@ class UserManager(BaseUserManager):
 class User(AbstractBaseUser, PermissionsMixin):
 
     ROLES = [
+        ('customer', 'Customer'),
+        ('merchant', 'Merchant'),
         ('support', 'Support'),
         ('kyc_officer', 'KYC Officer'),
         ('credit_officer', 'Credit Officer'),
@@ -369,6 +371,7 @@ class OTPVerification(models.Model):
         ('transaction', 'Transaction'),
         ('password_reset', 'Password Reset'),
         ('pin_reset', 'PIN Reset'),
+        ('web_login', 'Web Login'),
     ]
 
     id = models.UUIDField(

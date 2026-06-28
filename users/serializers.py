@@ -1,4 +1,5 @@
 from django.contrib.auth import authenticate
+from django.db.models import Q
 
 from rest_framework import serializers
 
@@ -44,7 +45,8 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 class LoginSerializer(serializers.Serializer):
 
-    phone = serializers.CharField()
+    identifier = serializers.CharField(required=False)
+    phone = serializers.CharField(required=False)
 
     password = serializers.CharField(
         write_only=True
@@ -52,11 +54,21 @@ class LoginSerializer(serializers.Serializer):
 
     def validate(self, attrs):
 
-        phone = attrs.get("phone")
+        identifier = attrs.get("identifier") or attrs.get("phone")
         password = attrs.get("password")
 
+        if not identifier:
+            raise serializers.ValidationError("Username or email is required")
+
+        try:
+            account = User.objects.get(
+                Q(email__iexact=identifier) | Q(phone__iexact=identifier)
+            )
+        except User.DoesNotExist:
+            raise serializers.ValidationError("Invalid credentials")
+
         user = authenticate(
-            username=phone,
+            username=account.phone,
             password=password
         )
 
@@ -65,18 +77,51 @@ class LoginSerializer(serializers.Serializer):
                 "Invalid credentials"
             )
 
-        refresh = RefreshToken.for_user(user)
+        return build_auth_payload(user)
 
-        return {
-            "refresh": str(refresh),
-            "access": str(refresh.access_token),
-            "user_id": str(user.id),
-            "full_name": user.full_name,
-            "kyc_status": user.kyc_status,
-            "credit_status": user.credit_status,
-            "phone_verified": user.is_phone_verified,
-            "has_pin": bool(user.pin),
-        }
+
+def resolve_account(user):
+    """Return the app role and linked payment profile for one identity."""
+    from payments.models import Customer, Merchant
+
+    if user.role == 'merchant':
+        merchant = Merchant.objects.filter(phone=user.phone).first()
+        return 'merchant', merchant
+    if user.role == 'customer':
+        customer = Customer.objects.filter(phone=user.phone).first()
+        return 'customer', customer
+
+    # Keep legacy accounts working while admin-created accounts use explicit roles.
+    merchant = Merchant.objects.filter(phone=user.phone).first()
+    if merchant:
+        return 'merchant', merchant
+    customer = Customer.objects.filter(phone=user.phone).first()
+    if customer:
+        return 'customer', customer
+    return 'admin', None
+
+
+def build_auth_payload(user):
+    refresh = RefreshToken.for_user(user)
+    account_type, profile = resolve_account(user)
+    data = {
+        'refresh': str(refresh),
+        'access': str(refresh.access_token),
+        'user_id': str(user.id),
+        'full_name': user.full_name,
+        'phone': user.phone,
+        'email': user.email,
+        'role': account_type,
+        'kyc_status': user.kyc_status,
+        'credit_status': user.credit_status,
+        'phone_verified': user.is_phone_verified,
+        'has_pin': bool(user.pin),
+    }
+    if account_type == 'merchant' and profile:
+        data.update(merchant_id=str(profile.id), merchant_name=profile.name)
+    elif account_type == 'customer' and profile:
+        data.update(customer_id=str(profile.id))
+    return data
 
 
 class SetPinSerializer(serializers.Serializer):

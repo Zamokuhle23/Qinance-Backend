@@ -8,6 +8,11 @@ from payments.compliance import (
     check_kyc_document_expiry,
 )
 from django.core.mail import send_mail
+from django.contrib.auth import authenticate
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
+from django.db.models import Q
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -30,12 +35,14 @@ from .serializers import (
     KYCDocumentSerializer,
     CreditApplicationSerializer,
     RejectSerializer,
+    build_auth_payload,
 )
 
 from .permissions import (
     IsKYCOfficer,
     IsCreditOfficer,
     IsFraudAnalyst,
+    IsSuperAdmin,
 )
 
 from .utils import (
@@ -53,9 +60,9 @@ def send_otp_email(user, otp_code):
     Silently skips if user has no email.
     """
     if not user.email:
-        return
+        return False
 
-    send_mail(
+    sent = send_mail(
         subject='Your Qinance verification code',
         message=(
             f'Hi {user.full_name},\n\n'
@@ -69,11 +76,13 @@ def send_otp_email(user, otp_code):
         recipient_list=[user.email],
         fail_silently=True,
     )
+    return sent == 1
 
 
 # ── Registration ──────────────────────────────────────────────────────────────
 
 class RegisterView(APIView):
+    permission_classes = [IsSuperAdmin]
 
     def post(self, request):
 
@@ -216,8 +225,7 @@ class LoginView(APIView):
 
         if serializer.is_valid():
 
-            phone = request.data.get('phone')
-            user = User.objects.get(phone=phone)
+            user = User.objects.get(id=serializer.validated_data['user_id'])
 
             register_device(request, user)
 
@@ -230,6 +238,145 @@ class LoginView(APIView):
             return Response(serializer.validated_data)
 
         return Response(serializer.errors, status=400)
+
+
+def _authenticate_identifier(identifier, password):
+    try:
+        account = User.objects.get(
+            Q(email__iexact=identifier) | Q(phone__iexact=identifier)
+        )
+    except (User.DoesNotExist, User.MultipleObjectsReturned):
+        return None
+    return authenticate(username=account.phone, password=password)
+
+
+class WebLoginStartView(APIView):
+    """Verify the password, then email a fresh OTP for every browser login."""
+
+    def post(self, request):
+        identifier = str(request.data.get('identifier', '')).strip()
+        password = request.data.get('password', '')
+        user = _authenticate_identifier(identifier, password)
+        if not user or not user.is_active:
+            return Response({'error': 'Invalid credentials'}, status=400)
+        if not user.email:
+            return Response({'error': 'This account has no email address. Contact an administrator.'}, status=400)
+
+        OTPVerification.objects.filter(user=user, purpose='web_login', is_used=False).update(is_used=True)
+        otp = OTPVerification.generate_otp(user, 'web_login')
+        if not send_otp_email(user, otp.code):
+            otp.is_used = True
+            otp.save(update_fields=['is_used'])
+            return Response({'error': 'Could not send the sign-in email. Try again later.'}, status=503)
+        response = {
+            'message': 'A sign-in code was sent to your email.',
+            'email_hint': _mask_email(user.email),
+        }
+        if settings.DEBUG:
+            response['otp_code'] = otp.code
+        return Response(response)
+
+
+class WebLoginVerifyView(APIView):
+    def post(self, request):
+        identifier = str(request.data.get('identifier', '')).strip()
+        code = str(request.data.get('code', '')).strip()
+        try:
+            user = User.objects.get(Q(email__iexact=identifier) | Q(phone__iexact=identifier))
+        except (User.DoesNotExist, User.MultipleObjectsReturned):
+            return Response({'error': 'Invalid or expired code'}, status=400)
+
+        success, message = OTPVerification.verify(user, code, 'web_login')
+        if not success:
+            return Response({'error': message}, status=400)
+        register_device(request, user)
+        create_audit_log(user=user, action='login', request=request)
+        return Response(build_auth_payload(user))
+
+
+def _mask_email(email):
+    local, domain = email.split('@', 1)
+    visible = local[:2] if len(local) > 2 else local[:1]
+    return f'{visible}{"*" * max(3, len(local) - len(visible))}@{domain}'
+
+
+class AdminAccountListCreateView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        accounts = User.objects.order_by('-created_at')
+        return Response([{
+            'id': str(user.id),
+            'full_name': user.full_name,
+            'email': user.email,
+            'phone': user.phone,
+            'role': build_auth_payload_without_tokens(user)['role'],
+            'is_active': user.is_active,
+            'created_at': user.created_at,
+        } for user in accounts])
+
+    def post(self, request):
+        from payments.models import CardDetails, Customer, Merchant
+
+        account_type = request.data.get('account_type')
+        email = str(request.data.get('email', '')).strip().lower()
+        phone = str(request.data.get('phone', '')).strip()
+        full_name = str(request.data.get('full_name', '')).strip()
+        password = request.data.get('password', '')
+        if account_type not in ('merchant', 'customer'):
+            return Response({'error': 'account_type must be merchant or customer'}, status=400)
+        if not all([email, phone, full_name, password]):
+            return Response({'error': 'email, phone, full_name, and password are required'}, status=400)
+        if User.objects.filter(Q(email__iexact=email) | Q(phone=phone)).exists():
+            return Response({'error': 'An account already uses that email or phone'}, status=400)
+        try:
+            validate_password(password)
+        except DjangoValidationError as error:
+            return Response({'error': list(error.messages)}, status=400)
+
+        with transaction.atomic():
+            user = User.objects.create_user(
+                phone=phone,
+                email=email,
+                full_name=full_name,
+                password=password,
+                role=account_type,
+                national_id=str(request.data.get('national_id', '')).strip(),
+                kyc_status='approved' if request.data.get('kyc_approved', True) else 'pending',
+                is_phone_verified=True,
+            )
+            if account_type == 'merchant':
+                profile = Merchant.objects.create(
+                    name=full_name,
+                    phone=phone,
+                    business_type=str(request.data.get('business_type', '')).strip(),
+                    location=str(request.data.get('location', '')).strip(),
+                    is_active=True,
+                    kyc_approved=bool(request.data.get('kyc_approved', True)),
+                )
+                profile_id = profile.id
+            else:
+                profile = Customer.objects.create(
+                    phone=phone,
+                    full_name=full_name,
+                    national_id=user.national_id,
+                    bank=request.data.get('bank', ''),
+                    credit_limit=request.data.get('credit_limit') or 0,
+                )
+                CardDetails.objects.create(customer=profile)
+                profile_id = profile.id
+
+        return Response({
+            'message': f'{account_type.title()} account created',
+            'user_id': str(user.id),
+            'profile_id': str(profile_id),
+        }, status=201)
+
+
+def build_auth_payload_without_tokens(user):
+    from .serializers import resolve_account
+    role, _ = resolve_account(user)
+    return {'role': role}
 
 
 # ── PIN ───────────────────────────────────────────────────────────────────────

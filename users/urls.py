@@ -23,6 +23,9 @@ from .views import (
     ForgotPinView,
     ResetPinView,
     RegisterFCMTokenView,
+    WebLoginStartView,
+    WebLoginVerifyView,
+    AdminAccountListCreateView,
 )
 
 urlpatterns = [
@@ -32,6 +35,9 @@ urlpatterns = [
     path('login/', LoginView.as_view()),
     path('set-pin/', SetPinView.as_view()),
     path('pin-login/', PinLoginView.as_view()),
+    path('web-login/start/', WebLoginStartView.as_view()),
+    path('web-login/verify/', WebLoginVerifyView.as_view()),
+    path('admin/accounts/', AdminAccountListCreateView.as_view()),
 
     # Phone / OTP verification
     path('verify-phone/', VerifyPhoneOTPView.as_view()),

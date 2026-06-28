@@ -26,11 +26,13 @@ for index, m in enumerate(merchants, start=1):
             'full_name': m['name'],
             'email': f'merchant{index}@qinance.demo',
             'kyc_status': 'approved',
+            'role': 'merchant',
             'is_active': True,
         },
     )
     user.set_pin('1234')
-    user.save(update_fields=['pin'])
+    user.set_password('Demo1234!')
+    user.save(update_fields=['pin', 'password'])
 
 customers = [
     {'phone': '+26876200001', 'full_name': 'Sipho Dlamini', 'bank': 'fnb', 'credit_limit': 5000, 'current_balance': 1250},
@@ -45,7 +47,7 @@ period_end = (period_start.replace(month=period_start.month % 12 + 1, day=1) if 
               else period_start.replace(year=period_start.year + 1, month=1, day=1)) - timedelta(days=1)
 due_date = period_end + timedelta(days=15)
 
-for c in customers:
+for index, c in enumerate(customers, start=1):
     balance = c.pop('current_balance')
     customer = Customer.objects.create(**c, current_balance=balance, statement_balance=balance)
 
@@ -69,8 +71,22 @@ for c in customers:
     # Create debit mandate
     DebitMandate.objects.create(customer=customer, bank=customer.bank)
 
-print(f"Created {len(merchants)} active merchants (demo PIN: 1234)")
-print(f"Created {len(customers)} customers with virtual cards")
+    user, _ = User.objects.update_or_create(
+        phone=customer.phone,
+        defaults={
+            'full_name': customer.full_name,
+            'email': f'customer{index}@qinance.demo',
+            'kyc_status': 'approved',
+            'role': 'customer',
+            'is_active': True,
+        },
+    )
+    user.set_pin('1234')
+    user.set_password('Demo1234!')
+    user.save(update_fields=['pin', 'password'])
+
+print(f"Created {len(merchants)} active merchants (demo password: Demo1234!)")
+print(f"Created {len(customers)} customers with virtual cards (demo password: Demo1234!)")
 print("\nMerchant IDs:")
 for m in Merchant.objects.all():
     print(f"  {m.name}: {m.id}")

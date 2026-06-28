@@ -38,3 +38,11 @@ class IsFraudAnalyst(BasePermission):
                 'super_admin'
             ]
         )
+
+
+class IsSuperAdmin(BasePermission):
+    def has_permission(self, request, view):
+        return (
+            request.user.is_authenticated and
+            (request.user.is_superuser or request.user.role == 'super_admin')
+        )

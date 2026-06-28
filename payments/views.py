@@ -3,6 +3,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from decimal import Decimal
@@ -121,6 +122,10 @@ class MerchantListView(APIView):
         return Response(MerchantSerializer(merchants, many=True).data)
 
     def post(self, request):
+        if not request.user.is_authenticated or not (
+            request.user.is_superuser or request.user.role == 'super_admin'
+        ):
+            return Response({'error': 'Only an administrator can create merchant accounts'}, status=403)
         serializer = MerchantSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
@@ -191,6 +196,10 @@ class CustomerListView(APIView):
         return Response(CustomerSerializer(customers, many=True).data)
 
     def post(self, request):
+        if not request.user.is_authenticated or not (
+            request.user.is_superuser or request.user.role == 'super_admin'
+        ):
+            return Response({'error': 'Only an administrator can create customer accounts'}, status=403)
         serializer = CustomerSerializer(data=request.data)
         if serializer.is_valid():
             customer = serializer.save()
@@ -1481,8 +1490,12 @@ def _execute_settlement(settlement_id):
 
 
 class SyncDeviceSecretView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         phone = request.data.get('phone')
+        if phone != request.user.phone:
+            return Response({'error': 'Device credentials can only be synced for the signed-in customer'}, status=403)
         try:
             customer = Customer.objects.get(phone=phone)
         except Customer.DoesNotExist:
