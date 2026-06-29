@@ -26,6 +26,8 @@ from .views import (
     WebLoginStartView,
     WebLoginVerifyView,
     AdminAccountListCreateView,
+    PendingKYCApplicationsView,
+    KYCApplicationDocumentView,
 )
 
 urlpatterns = [
@@ -38,6 +40,8 @@ urlpatterns = [
     path('web-login/start/', WebLoginStartView.as_view()),
     path('web-login/verify/', WebLoginVerifyView.as_view()),
     path('admin/accounts/', AdminAccountListCreateView.as_view()),
+    path('admin/kyc/pending/', PendingKYCApplicationsView.as_view()),
+    path('admin/kyc/documents/<uuid:document_id>/', KYCApplicationDocumentView.as_view()),
 
     # Phone / OTP verification
     path('verify-phone/', VerifyPhoneOTPView.as_view()),

@@ -1,4 +1,5 @@
 from django.core import mail
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
@@ -16,6 +17,7 @@ class ManagedAccountAuthenticationTests(APITestCase):
             full_name='Test Merchant',
             password=self.password,
             role='merchant',
+            kyc_status='approved',
         )
         self.merchant = Merchant.objects.create(
             phone=self.merchant_user.phone,
@@ -74,13 +76,59 @@ class ManagedAccountAuthenticationTests(APITestCase):
         self.assertEqual(user.role, 'customer')
         self.assertTrue(CardDetails.objects.filter(customer=customer).exists())
 
-    def test_public_registration_is_disabled(self):
+    def test_public_registration_creates_inactive_profile_pending_kyc(self):
         response = self.client.post('/api/auth/register/', {
+            'account_type': 'customer',
             'phone': '+26876999999',
             'email': 'public@example.com',
             'full_name': 'Public User',
+            'national_id': '123456789',
             'password': self.password,
         }, format='json')
-        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.status_code, 201)
+        user = User.objects.get(email='public@example.com')
+        self.assertEqual(user.role, 'customer')
+        self.assertEqual(user.kyc_status, 'pending')
+        self.assertFalse(Customer.objects.get(phone=user.phone).is_active)
         self.assertEqual(self.client.post('/api/merchants/', {}, format='json').status_code, 403)
         self.assertEqual(self.client.post('/api/customers/', {}, format='json').status_code, 403)
+
+    def test_admin_approves_completed_identity_application_and_email_is_sent(self):
+        phone = '+26876999998'
+        registered = self.client.post('/api/auth/register/', {
+            'account_type': 'merchant',
+            'phone': phone,
+            'email': 'applicant@example.com',
+            'full_name': 'Applicant Shop',
+            'national_id': 'ID-9988',
+            'password': self.password,
+            'business_type': 'Retail',
+            'location': 'Mbabane',
+        }, format='json')
+        self.assertEqual(registered.status_code, 201)
+        applicant = User.objects.get(phone=phone)
+        otp = OTPVerification.objects.get(user=applicant, purpose='phone_verification', is_used=False)
+        verified = self.client.post('/api/auth/verify-phone/', {'phone': phone, 'code': otp.code}, format='json')
+        self.assertEqual(verified.status_code, 200)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {verified.data["access"]}')
+        for document_type in ('id', 'selfie'):
+            upload = self.client.post('/api/auth/kyc/upload/', {
+                'document_type': document_type,
+                'file': SimpleUploadedFile(f'{document_type}.jpg', b'fake-image', content_type='image/jpeg'),
+            }, format='multipart')
+            self.assertEqual(upload.status_code, 200)
+        applicant.refresh_from_db()
+        self.assertEqual(applicant.kyc_status, 'under_review')
+
+        admin = User.objects.create_superuser(
+            phone='+26876000001', email='reviewer@example.com', password=self.password, full_name='Reviewer'
+        )
+        self.client.force_authenticate(admin)
+        approved = self.client.post(f'/api/auth/kyc/{applicant.id}/approve/')
+        self.assertEqual(approved.status_code, 200)
+        applicant.refresh_from_db()
+        self.assertEqual(applicant.kyc_status, 'approved')
+        merchant = Merchant.objects.get(phone=phone)
+        self.assertTrue(merchant.is_active)
+        self.assertTrue(merchant.kyc_approved)
+        self.assertTrue(any(message.to == ['applicant@example.com'] and 'approved' in message.subject.lower() for message in mail.outbox))

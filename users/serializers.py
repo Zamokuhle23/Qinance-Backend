@@ -16,6 +16,15 @@ from .models import (
 
 class RegisterSerializer(serializers.ModelSerializer):
 
+    account_type = serializers.ChoiceField(
+        choices=['customer', 'merchant'],
+        write_only=True
+    )
+
+    business_type = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    location = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    bank = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
     password = serializers.CharField(
         write_only=True
     )
@@ -24,21 +33,56 @@ class RegisterSerializer(serializers.ModelSerializer):
         model = User
 
         fields = [
+            'account_type',
             'phone',
             'email',
             'full_name',
             'national_id',
             'password',
+            'business_type',
+            'location',
+            'bank',
         ]
+
+        extra_kwargs = {
+            'email': {'required': True, 'allow_blank': False},
+            'national_id': {'required': True, 'allow_blank': False},
+        }
 
     def create(self, validated_data):
 
+        from payments.models import Customer, Merchant
+
         password = validated_data.pop('password')
+        account_type = validated_data.pop('account_type')
+        business_type = validated_data.pop('business_type', '')
+        location = validated_data.pop('location', '')
+        bank = validated_data.pop('bank', '')
 
         user = User.objects.create_user(
             password=password,
+            role=account_type,
+            kyc_status='pending',
             **validated_data
         )
+
+        if account_type == 'merchant':
+            Merchant.objects.create(
+                phone=user.phone,
+                name=user.full_name,
+                business_type=business_type,
+                location=location,
+                is_active=False,
+                kyc_approved=False,
+            )
+        else:
+            Customer.objects.create(
+                phone=user.phone,
+                full_name=user.full_name,
+                national_id=user.national_id,
+                bank=bank,
+                is_active=False,
+            )
 
         return user
 
@@ -75,6 +119,11 @@ class LoginSerializer(serializers.Serializer):
         if not user:
             raise serializers.ValidationError(
                 "Invalid credentials"
+            )
+
+        if not (user.is_staff or user.is_superuser) and user.kyc_status != 'approved':
+            raise serializers.ValidationError(
+                "Your application is still awaiting administrator approval"
             )
 
         return build_auth_payload(user)
@@ -165,6 +214,11 @@ class PinLoginSerializer(serializers.Serializer):
         if not user.check_pin(pin):
             raise serializers.ValidationError(
                 "Invalid PIN"
+            )
+
+        if not (user.is_staff or user.is_superuser) and user.kyc_status != 'approved':
+            raise serializers.ValidationError(
+                "Your application is still awaiting administrator approval"
             )
 
         refresh = RefreshToken.for_user(user)

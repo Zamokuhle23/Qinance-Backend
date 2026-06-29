@@ -18,6 +18,7 @@ boto3==1.35.93
 
 # Environment variables
 python-dotenv==1.0.1
+requests==2.34.2
 
 # PostgreSQL (production)
 psycopg2-binary==2.9.10

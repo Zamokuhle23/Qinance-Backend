@@ -8,6 +8,7 @@ from payments.compliance import (
     check_kyc_document_expiry,
 )
 from django.core.mail import send_mail
+from django.http import FileResponse
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -21,6 +22,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 
 from .models import (
     User,
+    KYCDocument,
     OTPVerification,
     CreditApplication,
     FraudFlag,
@@ -82,8 +84,6 @@ def send_otp_email(user, otp_code):
 # ── Registration ──────────────────────────────────────────────────────────────
 
 class RegisterView(APIView):
-    permission_classes = [IsSuperAdmin]
-
     def post(self, request):
 
         serializer = RegisterSerializer(data=request.data)
@@ -96,7 +96,13 @@ class RegisterView(APIView):
             if not allowed:
                 return Response({'error': reason}, status=400)
 
-            user = serializer.save()
+            try:
+                validate_password(serializer.validated_data.get('password'))
+            except DjangoValidationError as error:
+                return Response({'error': list(error.messages)}, status=400)
+
+            with transaction.atomic():
+                user = serializer.save()
 
             otp = OTPVerification.generate_otp(
                 user,
@@ -128,7 +134,7 @@ class RegisterView(APIView):
             if settings.DEBUG:
                 response_data["otp_code"] = otp.code
 
-            return Response(response_data)
+            return Response(response_data, status=201)
 
         return Response(serializer.errors, status=400)
 
@@ -212,7 +218,9 @@ class VerifyPhoneOTPView(APIView):
             request=request,
         )
 
-        return Response({"message": "Phone verified successfully"})
+        response = build_auth_payload(user)
+        response["message"] = "Email verified successfully"
+        return Response(response)
 
 
 # ── Login ─────────────────────────────────────────────────────────────────────
@@ -259,6 +267,8 @@ class WebLoginStartView(APIView):
         user = _authenticate_identifier(identifier, password)
         if not user or not user.is_active:
             return Response({'error': 'Invalid credentials'}, status=400)
+        if not (user.is_staff or user.is_superuser) and user.kyc_status != 'approved':
+            return Response({'error': 'Your application is still awaiting administrator approval.'}, status=403)
         if not user.email:
             return Response({'error': 'This account has no email address. Contact an administrator.'}, status=400)
 
@@ -289,6 +299,8 @@ class WebLoginVerifyView(APIView):
         success, message = OTPVerification.verify(user, code, 'web_login')
         if not success:
             return Response({'error': message}, status=400)
+        if not (user.is_staff or user.is_superuser) and user.kyc_status != 'approved':
+            return Response({'error': 'Your application is still awaiting administrator approval.'}, status=403)
         register_device(request, user)
         create_audit_log(user=user, action='login', request=request)
         return Response(build_auth_payload(user))
@@ -312,6 +324,7 @@ class AdminAccountListCreateView(APIView):
             'phone': user.phone,
             'role': build_auth_payload_without_tokens(user)['role'],
             'is_active': user.is_active,
+            'kyc_status': user.kyc_status,
             'created_at': user.created_at,
         } for user in accounts])
 
@@ -436,9 +449,19 @@ class UploadKYCDocumentView(APIView):
 
         if serializer.is_valid():
 
+            document_type = serializer.validated_data['document_type']
+            if document_type not in ('id', 'selfie'):
+                return Response({'error': 'Only an ID and live selfie are accepted during onboarding.'}, status=400)
+
+            KYCDocument.objects.filter(
+                user=request.user,
+                document_type=document_type,
+            ).delete()
+
             serializer.save(user=request.user)
 
-            request.user.kyc_status = 'under_review'
+            uploaded = set(request.user.documents.values_list('document_type', flat=True))
+            request.user.kyc_status = 'under_review' if {'id', 'selfie'} <= uploaded else 'pending'
             request.user.save()
 
             create_audit_log(
@@ -447,9 +470,55 @@ class UploadKYCDocumentView(APIView):
                 request=request,
             )
 
-            return Response({"message": "Document uploaded successfully"})
+            return Response({
+                "message": "Application submitted for review" if request.user.kyc_status == 'under_review' else "Document uploaded successfully",
+                "kyc_status": request.user.kyc_status,
+                "uploaded": sorted(uploaded),
+            })
 
         return Response(serializer.errors, status=400)
+
+
+class PendingKYCApplicationsView(APIView):
+    permission_classes = [IsKYCOfficer]
+
+    def get(self, request):
+        users = User.objects.filter(
+            role__in=('customer', 'merchant'),
+            kyc_status='under_review',
+        ).prefetch_related('documents').order_by('created_at')
+
+        return Response([{
+            'user_id': str(user.id),
+            'account_type': user.role,
+            'full_name': user.full_name,
+            'email': user.email,
+            'phone': user.phone,
+            'national_id': user.national_id,
+            'created_at': user.created_at,
+            'documents': [{
+                'id': str(document.id),
+                'document_type': document.document_type,
+                'url': f'/api/auth/admin/kyc/documents/{document.id}/',
+                'uploaded_at': document.uploaded_at,
+            } for document in user.documents.all()],
+        } for user in users])
+
+
+class KYCApplicationDocumentView(APIView):
+    permission_classes = [IsKYCOfficer]
+
+    def get(self, request, document_id):
+        try:
+            document = KYCDocument.objects.get(id=document_id)
+        except KYCDocument.DoesNotExist:
+            return Response({'error': 'Document not found'}, status=404)
+        return FileResponse(
+            document.file.open('rb'),
+            content_type='application/octet-stream',
+            as_attachment=False,
+            filename=document.file.name.rsplit('/', 1)[-1],
+        )
 
 
 class ApproveKYCView(APIView):
@@ -463,16 +532,32 @@ class ApproveKYCView(APIView):
         except User.DoesNotExist:
             return Response({"error": "User not found"}, status=404)
 
-        user.kyc_status = 'approved'
-        user.save()
+        uploaded = set(user.documents.values_list('document_type', flat=True))
+        if not {'id', 'selfie'} <= uploaded:
+            return Response({'error': 'Both an ID and live selfie are required before approval.'}, status=400)
+
+        from payments.models import CardDetails, Customer, Merchant
+
+        with transaction.atomic():
+            user.kyc_status = 'approved'
+            user.rejection_reason = ''
+            user.save(update_fields=['kyc_status', 'rejection_reason'])
+            user.documents.update(status='approved', rejection_reason='')
+            if user.role == 'merchant':
+                Merchant.objects.filter(phone=user.phone).update(is_active=True, kyc_approved=True)
+            elif user.role == 'customer':
+                customer = Customer.objects.get(phone=user.phone)
+                customer.is_active = True
+                customer.save(update_fields=['is_active'])
+                CardDetails.objects.get_or_create(customer=customer)
 
         if user.email:
             send_mail(
                 subject='Your Qinance KYC has been approved',
                 message=(
                     f'Hi {user.full_name},\n\n'
-                    f'Great news! Your identity verification has been approved.\n'
-                    f'You can now apply for your Qinance credit card.\n\n'
+                    f'Great news! Your {user.role} account has been approved.\n'
+                    f'You can now sign in to Qinance using the password you created.\n\n'
                     f'— The Qinance Team'
                 ),
                 from_email=settings.DEFAULT_FROM_EMAIL,
@@ -509,6 +594,11 @@ class RejectKYCView(APIView):
         user.kyc_status = 'rejected'
         user.rejection_reason = serializer.validated_data['reason']
         user.save()
+        user.documents.update(status='rejected', rejection_reason=serializer.validated_data['reason'])
+
+        from payments.models import Customer, Merchant
+        Merchant.objects.filter(phone=user.phone).update(is_active=False, kyc_approved=False)
+        Customer.objects.filter(phone=user.phone).update(is_active=False)
 
         if user.email:
             send_mail(
