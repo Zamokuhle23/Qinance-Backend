@@ -1,5 +1,8 @@
 from django.core import mail
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
+from django.utils import timezone
+from datetime import timedelta
 import shutil
 import tempfile
 from django.test import override_settings
@@ -86,19 +89,34 @@ class ManagedAccountAuthenticationTests(APITestCase):
         self.assertTrue(CardDetails.objects.filter(customer=customer).exists())
 
     def test_public_registration_creates_inactive_profile_pending_kyc(self):
-        response = self.client.post('/api/auth/register/', {
+        payload = {
             'account_type': 'customer',
             'phone': '+26876999999',
             'email': 'public@example.com',
             'full_name': 'Public User',
             'national_id': '123456789',
             'password': self.password,
-        }, format='json')
+        }
+        response = self.client.post('/api/auth/register/', payload, format='json')
         self.assertEqual(response.status_code, 201)
         user = User.objects.get(email='public@example.com')
         self.assertEqual(user.role, 'customer')
         self.assertEqual(user.kyc_status, 'pending')
         self.assertFalse(Customer.objects.get(phone=user.phone).is_active)
+        self.assertIsNotNone(user.registration_expires_at)
+
+        resumed_otp = self.client.post('/api/auth/register/', payload, format='json')
+        self.assertEqual(resumed_otp.status_code, 200)
+        self.assertEqual(resumed_otp.data['resume_stage'], 'email_verification')
+        otp = OTPVerification.objects.get(user=user, purpose='phone_verification', is_used=False)
+        verified = self.client.post('/api/auth/verify-phone/', {'phone': user.phone, 'code': otp.code}, format='json')
+        self.assertEqual(verified.status_code, 200)
+
+        resumed_kyc = self.client.post('/api/auth/register/', payload, format='json')
+        self.assertEqual(resumed_kyc.status_code, 200)
+        self.assertEqual(resumed_kyc.data['resume_stage'], 'identity_verification')
+        self.assertIn('access', resumed_kyc.data)
+        self.assertEqual(resumed_kyc.data['kyc_uploaded'], [])
         self.assertEqual(self.client.post('/api/merchants/', {}, format='json').status_code, 403)
         self.assertEqual(self.client.post('/api/customers/', {}, format='json').status_code, 403)
 
@@ -142,3 +160,17 @@ class ManagedAccountAuthenticationTests(APITestCase):
         self.assertTrue(merchant.is_active)
         self.assertTrue(merchant.kyc_approved)
         self.assertTrue(any(message.to == ['applicant@example.com'] and 'approved' in message.subject.lower() for message in mail.outbox))
+
+    def test_cleanup_removes_only_expired_unfinished_registration(self):
+        response = self.client.post('/api/auth/register/', {
+            'account_type': 'customer', 'phone': '+26876999997',
+            'email': 'stale@example.com', 'full_name': 'Stale Applicant',
+            'national_id': 'STALE-1', 'password': self.password,
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        user = User.objects.get(phone='+26876999997')
+        user.registration_expires_at = timezone.now() - timedelta(minutes=1)
+        user.save(update_fields=['registration_expires_at'])
+        call_command('cleanup_stale_registrations')
+        self.assertFalse(User.objects.filter(phone='+26876999997').exists())
+        self.assertFalse(Customer.objects.filter(phone='+26876999997').exists())

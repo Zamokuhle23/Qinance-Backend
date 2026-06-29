@@ -15,6 +15,8 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
+from datetime import timedelta
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -84,8 +86,63 @@ def send_otp_email(user, otp_code):
 
 # ── Registration ──────────────────────────────────────────────────────────────
 
+def _delete_unfinished_registration(user):
+    from payments.models import Customer, Merchant
+
+    Merchant.objects.filter(phone=user.phone).delete()
+    Customer.objects.filter(phone=user.phone).delete()
+    user.delete()
+
+
+def _resume_registration(request, user, password):
+    if not user.check_password(password):
+        return Response({'error': 'An unfinished application already uses these details. Enter the same password to continue.'}, status=409)
+    if user.kyc_status == 'approved':
+        return Response({'error': 'This account is already approved. Sign in instead.', 'resume_stage': 'approved'}, status=409)
+    if user.kyc_status == 'under_review':
+        return Response({'message': 'Your application is awaiting administrator review.', 'resume_stage': 'pending_review'})
+    if user.kyc_status == 'rejected':
+        return Response({'error': user.rejection_reason or 'This application was rejected. Contact support.', 'resume_stage': 'rejected'}, status=409)
+
+    retention_days = int(getattr(settings, 'PENDING_REGISTRATION_RETENTION_DAYS', 7))
+    user.registration_expires_at = timezone.now() + timedelta(days=retention_days)
+    user.save(update_fields=['registration_expires_at'])
+
+    if not user.is_phone_verified:
+        OTPVerification.objects.filter(user=user, purpose='phone_verification', is_used=False).update(is_used=True)
+        otp = OTPVerification.generate_otp(user, 'phone_verification')
+        send_otp_email(user, otp.code)
+        response = {
+            'message': 'Application found. A new verification code was sent to your email.',
+            'resume_stage': 'email_verification',
+            'user_id': str(user.id),
+        }
+        if settings.DEBUG:
+            response['otp_code'] = otp.code
+        return Response(response)
+
+    response = build_auth_payload(user)
+    response.update({
+        'message': 'Application found. Continue your identity verification.',
+        'resume_stage': 'identity_verification',
+    })
+    return Response(response)
+
+
 class RegisterView(APIView):
     def post(self, request):
+
+        email = str(request.data.get('email', '')).strip().lower()
+        phone = str(request.data.get('phone', '')).strip()
+        existing = list(User.objects.filter(Q(email__iexact=email) | Q(phone=phone)).distinct())
+        if existing:
+            if len(existing) != 1 or existing[0].email.lower() != email or existing[0].phone != phone:
+                return Response({'error': 'That email or phone number belongs to another application.'}, status=409)
+            user = existing[0]
+            if user.registration_expires_at and user.registration_expires_at <= timezone.now():
+                _delete_unfinished_registration(user)
+            else:
+                return _resume_registration(request, user, request.data.get('password', ''))
 
         serializer = RegisterSerializer(data=request.data)
 
@@ -103,7 +160,8 @@ class RegisterView(APIView):
                 return Response({'error': list(error.messages)}, status=400)
 
             with transaction.atomic():
-                user = serializer.save()
+                retention_days = int(getattr(settings, 'PENDING_REGISTRATION_RETENTION_DAYS', 7))
+                user = serializer.save(registration_expires_at=timezone.now() + timedelta(days=retention_days))
 
             otp = OTPVerification.generate_otp(
                 user,
@@ -473,6 +531,11 @@ class UploadKYCDocumentView(APIView):
             uploaded = set(request.user.documents.values_list('document_type', flat=True))
             required = {'id', 'selfie_front', 'selfie_left', 'selfie_right'}
             request.user.kyc_status = 'under_review' if required <= uploaded else 'pending'
+            if request.user.kyc_status == 'under_review':
+                request.user.registration_expires_at = None
+            elif request.user.registration_expires_at:
+                retention_days = int(getattr(settings, 'PENDING_REGISTRATION_RETENTION_DAYS', 7))
+                request.user.registration_expires_at = timezone.now() + timedelta(days=retention_days)
             request.user.save()
 
             verification = None

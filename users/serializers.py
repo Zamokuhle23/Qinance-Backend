@@ -165,6 +165,7 @@ def build_auth_payload(user):
         'credit_status': user.credit_status,
         'phone_verified': user.is_phone_verified,
         'has_pin': bool(user.pin),
+        'kyc_uploaded': list(user.documents.values_list('document_type', flat=True)),
     }
     if account_type == 'merchant' and profile:
         data.update(merchant_id=str(profile.id), merchant_name=profile.name)

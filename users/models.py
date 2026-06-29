@@ -179,6 +179,12 @@ class User(AbstractBaseUser, PermissionsMixin):
         auto_now_add=True
     )
 
+    registration_expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Expiry for unfinished public onboarding; null for managed or submitted accounts'
+    )
+
     USERNAME_FIELD = 'phone'
 
     REQUIRED_FIELDS = ['email']
