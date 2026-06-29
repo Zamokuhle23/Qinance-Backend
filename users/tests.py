@@ -242,3 +242,29 @@ class ManagedAccountAuthenticationTests(APITestCase):
         corrected_height, corrected_width = corrected.shape[:2]
         self.assertGreater(corrected_width, corrected_height)
         self.assertGreater(corrected_width, 700)
+
+    def test_web_id_capture_falls_back_to_guide_crop_for_weak_edges(self):
+        import cv2
+        import numpy as np
+
+        applicant = User.objects.create_user(
+            phone='+26876999994', email='softedges@example.com',
+            full_name='Soft Edge Applicant', password=self.password,
+            role='customer', kyc_status='pending', is_phone_verified=True,
+        )
+        # Deliberately low contrast with no detectable rectangular border.
+        image = np.full((800, 1200, 3), 185, dtype=np.uint8)
+        cv2.putText(image, 'IDENTITY DOCUMENT', (310, 390), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (165, 165, 165), 2)
+        encoded, jpeg = cv2.imencode('.jpg', image)
+        self.assertTrue(encoded)
+
+        self.client.force_authenticate(applicant)
+        response = self.client.post('/api/auth/kyc/upload/', {
+            'document_type': 'id', 'biometric_consent': 'true',
+            'server_correct_id': 'true',
+            'file': SimpleUploadedFile('soft-id.jpg', jpeg.tobytes(), content_type='image/jpeg'),
+        }, format='multipart')
+        self.assertEqual(response.status_code, 200)
+        document = applicant.documents.get(document_type='id')
+        self.assertEqual(document.capture_metadata['correction_method'], 'guide_frame_crop')
+        self.assertEqual(document.capture_metadata['corrected_size'], [912, 608])

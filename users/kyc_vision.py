@@ -42,10 +42,20 @@ def correct_id_document(uploaded_file):
         area = abs(cv2.contourArea(polygon))
         if len(polygon) == 4 and area > minimum_area and area > best_area:
             best, best_area = polygon, area
+    correction_method = 'detected_perspective'
     if best is None:
-        raise ValueError('ID edges were not clear. Place the entire ID on a dark contrasting surface and retake it.')
-
-    points = best.reshape(4, 2).astype('float32') / scale
+        # The web camera places a visible guide around the ID. Real cards often
+        # have rounded corners, glare, or low-contrast edges, so a missing
+        # four-corner contour must not trap an applicant in a retake loop.
+        # Keep a generous margin around that guide for manual review.
+        margin_x, margin_y = width * 0.12, height * 0.12
+        points = np.array([
+            [margin_x, margin_y], [width - margin_x, margin_y],
+            [width - margin_x, height - margin_y], [margin_x, height - margin_y],
+        ], dtype='float32')
+        correction_method = 'guide_frame_crop'
+    else:
+        points = best.reshape(4, 2).astype('float32') / scale
     ordered = np.zeros((4, 2), dtype='float32')
     point_sums = points.sum(axis=1)
     point_differences = np.diff(points, axis=1).reshape(-1)
@@ -57,7 +67,7 @@ def correct_id_document(uploaded_file):
     output_width = round(max(np.linalg.norm(top_right - top_left), np.linalg.norm(bottom_right - bottom_left)))
     output_height = round(max(np.linalg.norm(bottom_left - top_left), np.linalg.norm(bottom_right - top_right)))
     if output_width < 240 or output_height < 140:
-        raise ValueError('The ID is too small in the photo. Move closer and retake it.')
+        raise ValueError('The ID photo resolution is too small. Move closer and retake it.')
 
     destination = np.array([
         [0, 0], [output_width - 1, 0],
@@ -70,6 +80,7 @@ def correct_id_document(uploaded_file):
         raise ValueError('The corrected ID could not be encoded. Please retake it.')
     return ContentFile(jpeg.tobytes(), name='corrected-id.jpg'), {
         'server_corrected': True,
+        'correction_method': correction_method,
         'source_size': [width, height],
         'corrected_size': [output_width, output_height],
     }
