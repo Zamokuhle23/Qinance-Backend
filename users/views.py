@@ -1031,17 +1031,18 @@ class KYCExpiryView(APIView):
 
 class ForgotPasswordView(APIView):
     def post(self, request):
-        phone = request.data.get('phone')
-        if not phone:
-            return Response({'error': 'phone is required'}, status=400)
+        identifier = str(request.data.get('identifier') or request.data.get('phone') or '').strip()
+        if not identifier:
+            return Response({'error': 'email or phone is required'}, status=400)
         try:
-            user = User.objects.get(phone=phone)
+            user = User.objects.get(Q(email__iexact=identifier) | Q(phone=identifier))
+            OTPVerification.objects.filter(user=user, purpose='password_reset', is_used=False).update(is_used=True)
             otp = OTPVerification.generate_otp(user, 'password_reset')
             send_otp_email(user, otp.code)
             response_data = {'message': 'A reset code has been sent to your email.'}
             if settings.DEBUG:
                 response_data['otp_code'] = otp.code
-        except User.DoesNotExist:
+        except (User.DoesNotExist, User.MultipleObjectsReturned):
             # Same message either way — don't reveal if account exists
             response_data = {'message': 'A reset code has been sent to your email.'}
         return Response(response_data)
@@ -1049,21 +1050,27 @@ class ForgotPasswordView(APIView):
 
 class ResetPasswordView(APIView):
     def post(self, request):
-        phone       = request.data.get('phone')
+        identifier  = str(request.data.get('identifier') or request.data.get('phone') or '').strip()
         code        = request.data.get('code')
         new_password = request.data.get('new_password')
-        if not all([phone, code, new_password]):
-            return Response({'error': 'phone, code, and new_password are required'}, status=400)
-        if len(new_password) < 8:
-            return Response({'error': 'Password must be at least 8 characters'}, status=400)
+        if not all([identifier, code, new_password]):
+            return Response({'error': 'email or phone, code, and new_password are required'}, status=400)
         try:
-            user = User.objects.get(phone=phone)
-        except User.DoesNotExist:
+            user = User.objects.get(Q(email__iexact=identifier) | Q(phone=identifier))
+        except (User.DoesNotExist, User.MultipleObjectsReturned):
             return Response({'error': 'Invalid request'}, status=400)
+        try:
+            validate_password(new_password, user=user)
+        except DjangoValidationError as error:
+            return Response({'error': list(error.messages)}, status=400)
         success, message = OTPVerification.verify(user, code, 'password_reset')
         if not success:
             return Response({'error': message}, status=400)
         user.set_password(new_password)
+        user.is_phone_verified = True
+        if user.registration_expires_at:
+            retention_days = int(getattr(settings, 'PENDING_REGISTRATION_RETENTION_DAYS', 7))
+            user.registration_expires_at = timezone.now() + timedelta(days=retention_days)
         user.save()
         if user.email:
             send_mail(
@@ -1078,7 +1085,15 @@ class ResetPasswordView(APIView):
                 recipient_list=[user.email],
                 fail_silently=True,
             )
-        return Response({'message': 'Password reset successfully.'})
+        if user.kyc_status == 'under_review':
+            return Response({'message': 'Password reset successfully.', 'resume_stage': 'pending_review'})
+        if user.kyc_status == 'rejected':
+            return Response({'message': 'Password reset successfully.', 'resume_stage': 'rejected', 'error': user.rejection_reason})
+        if user.kyc_status == 'approved':
+            return Response({'message': 'Password reset successfully. Sign in with your new password.', 'resume_stage': 'login'})
+        response = build_auth_payload(user)
+        response.update({'message': 'Password reset successfully. Continue your application.', 'resume_stage': 'identity_verification'})
+        return Response(response)
 
 
 # ── Forgot / Reset PIN ────────────────────────────────────────────────────────

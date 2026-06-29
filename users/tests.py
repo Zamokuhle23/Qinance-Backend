@@ -174,3 +174,38 @@ class ManagedAccountAuthenticationTests(APITestCase):
         call_command('cleanup_stale_registrations')
         self.assertFalse(User.objects.filter(phone='+26876999997').exists())
         self.assertFalse(Customer.objects.filter(phone='+26876999997').exists())
+
+    def test_password_recovery_resumes_unfinished_application(self):
+        phone = '+26876999996'
+        email = 'recover@example.com'
+        registered = self.client.post('/api/auth/register/', {
+            'account_type': 'customer', 'phone': phone, 'email': email,
+            'full_name': 'Recover Applicant', 'national_id': 'RECOVER-1',
+            'password': self.password,
+        }, format='json')
+        self.assertEqual(registered.status_code, 201)
+
+        requested = self.client.post('/api/auth/forgot-password/', {
+            'identifier': email,
+        }, format='json')
+        self.assertEqual(requested.status_code, 200)
+        user = User.objects.get(email=email)
+        otp = OTPVerification.objects.get(user=user, purpose='password_reset', is_used=False)
+        new_password = 'NewStrongDemo456!'
+        reset = self.client.post('/api/auth/reset-password/', {
+            'identifier': email, 'code': otp.code, 'new_password': new_password,
+        }, format='json')
+        self.assertEqual(reset.status_code, 200)
+        self.assertEqual(reset.data['resume_stage'], 'identity_verification')
+        self.assertIn('access', reset.data)
+        self.assertEqual(reset.data['kyc_uploaded'], [])
+        user.refresh_from_db()
+        self.assertTrue(user.check_password(new_password))
+
+        resumed = self.client.post('/api/auth/register/', {
+            'account_type': 'customer', 'phone': phone, 'email': email,
+            'full_name': 'Recover Applicant', 'national_id': 'RECOVER-1',
+            'password': new_password,
+        }, format='json')
+        self.assertEqual(resumed.status_code, 200)
+        self.assertEqual(resumed.data['resume_stage'], 'identity_verification')
