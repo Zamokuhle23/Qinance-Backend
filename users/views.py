@@ -9,6 +9,7 @@ from payments.compliance import (
 )
 from django.core.mail import send_mail
 from django.http import FileResponse
+import mimetypes
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -445,13 +446,22 @@ class UploadKYCDocumentView(APIView):
 
     def post(self, request):
 
+        if not request.user.consents.filter(
+            consent_type='biometric_identity_verification', accepted=True
+        ).exists():
+            consent = str(request.data.get('biometric_consent', '')).lower()
+            if consent not in ('true', '1', 'yes'):
+                return Response({'error': 'Explicit consent is required for guided face verification.'}, status=400)
+            log_consent(request.user, 'biometric_identity_verification', request)
+
         serializer = KYCDocumentSerializer(data=request.data)
 
         if serializer.is_valid():
 
             document_type = serializer.validated_data['document_type']
-            if document_type not in ('id', 'selfie'):
-                return Response({'error': 'Only an ID and live selfie are accepted during onboarding.'}, status=400)
+            allowed_types = ('id', 'selfie_front', 'selfie_left', 'selfie_right')
+            if document_type not in allowed_types:
+                return Response({'error': 'Upload the ID and guided centre, left, and right selfie captures.'}, status=400)
 
             KYCDocument.objects.filter(
                 user=request.user,
@@ -461,8 +471,14 @@ class UploadKYCDocumentView(APIView):
             serializer.save(user=request.user)
 
             uploaded = set(request.user.documents.values_list('document_type', flat=True))
-            request.user.kyc_status = 'under_review' if {'id', 'selfie'} <= uploaded else 'pending'
+            required = {'id', 'selfie_front', 'selfie_left', 'selfie_right'}
+            request.user.kyc_status = 'under_review' if required <= uploaded else 'pending'
             request.user.save()
+
+            verification = None
+            if request.user.kyc_status == 'under_review':
+                from .kyc_vision import evaluate_user_kyc
+                verification = evaluate_user_kyc(request.user)
 
             create_audit_log(
                 user=request.user,
@@ -474,6 +490,7 @@ class UploadKYCDocumentView(APIView):
                 "message": "Application submitted for review" if request.user.kyc_status == 'under_review' else "Document uploaded successfully",
                 "kyc_status": request.user.kyc_status,
                 "uploaded": sorted(uploaded),
+                "recommendation": verification.recommendation if verification else None,
             })
 
         return Response(serializer.errors, status=400)
@@ -502,6 +519,12 @@ class PendingKYCApplicationsView(APIView):
                 'url': f'/api/auth/admin/kyc/documents/{document.id}/',
                 'uploaded_at': document.uploaded_at,
             } for document in user.documents.all()],
+            'verification': ({
+                'similarity_score': user.kyc_verification.similarity_score,
+                'pose_challenge_passed': user.kyc_verification.pose_challenge_passed,
+                'recommendation': user.kyc_verification.recommendation,
+                'details': user.kyc_verification.details,
+            } if hasattr(user, 'kyc_verification') else None),
         } for user in users])
 
 
@@ -515,7 +538,7 @@ class KYCApplicationDocumentView(APIView):
             return Response({'error': 'Document not found'}, status=404)
         return FileResponse(
             document.file.open('rb'),
-            content_type='application/octet-stream',
+            content_type=mimetypes.guess_type(document.file.name)[0] or 'application/octet-stream',
             as_attachment=False,
             filename=document.file.name.rsplit('/', 1)[-1],
         )
@@ -533,8 +556,9 @@ class ApproveKYCView(APIView):
             return Response({"error": "User not found"}, status=404)
 
         uploaded = set(user.documents.values_list('document_type', flat=True))
-        if not {'id', 'selfie'} <= uploaded:
-            return Response({'error': 'Both an ID and live selfie are required before approval.'}, status=400)
+        required = {'id', 'selfie_front', 'selfie_left', 'selfie_right'}
+        if not required <= uploaded:
+            return Response({'error': 'ID plus centre, left, and right guided selfies are required before approval.'}, status=400)
 
         from payments.models import CardDetails, Customer, Merchant
 

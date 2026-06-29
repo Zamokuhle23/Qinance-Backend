@@ -233,6 +233,14 @@ class PinLoginSerializer(serializers.Serializer):
 
 class KYCDocumentSerializer(serializers.ModelSerializer):
 
+    def validate_file(self, value):
+        if value.size > 10 * 1024 * 1024:
+            raise serializers.ValidationError('Identity images must be smaller than 10 MB.')
+        content_type = getattr(value, 'content_type', '')
+        if content_type not in ('image/jpeg', 'image/png', 'image/webp'):
+            raise serializers.ValidationError('Only JPEG, PNG, or WebP identity images are accepted.')
+        return value
+
     class Meta:
         model = KYCDocument
 

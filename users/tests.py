@@ -1,5 +1,7 @@
 from django.core import mail
 from django.core.files.uploadedfile import SimpleUploadedFile
+import shutil
+import tempfile
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
@@ -7,7 +9,14 @@ from payments.models import CardDetails, Customer, Merchant
 from users.models import OTPVerification, User
 
 
-@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+TEST_MEDIA_ROOT = tempfile.mkdtemp()
+
+
+def tearDownModule():
+    shutil.rmtree(TEST_MEDIA_ROOT, ignore_errors=True)
+
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend', MEDIA_ROOT=TEST_MEDIA_ROOT)
 class ManagedAccountAuthenticationTests(APITestCase):
     def setUp(self):
         self.password = 'StrongDemo123!'
@@ -111,9 +120,10 @@ class ManagedAccountAuthenticationTests(APITestCase):
         verified = self.client.post('/api/auth/verify-phone/', {'phone': phone, 'code': otp.code}, format='json')
         self.assertEqual(verified.status_code, 200)
         self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {verified.data["access"]}')
-        for document_type in ('id', 'selfie'):
+        for document_type in ('id', 'selfie_front', 'selfie_left', 'selfie_right'):
             upload = self.client.post('/api/auth/kyc/upload/', {
                 'document_type': document_type,
+                'biometric_consent': 'true',
                 'file': SimpleUploadedFile(f'{document_type}.jpg', b'fake-image', content_type='image/jpeg'),
             }, format='multipart')
             self.assertEqual(upload.status_code, 200)

@@ -203,6 +203,9 @@ class KYCDocument(models.Model):
         ('residence', 'Proof of Residence'),
         ('income', 'Proof of Income'),
         ('selfie', 'Selfie'),
+        ('selfie_front', 'Guided Selfie - Front'),
+        ('selfie_left', 'Guided Selfie - Left'),
+        ('selfie_right', 'Guided Selfie - Right'),
     ]
 
     STATUS = [
@@ -251,6 +254,29 @@ class KYCDocument(models.Model):
     uploaded_at = models.DateTimeField(
         auto_now_add=True
     )
+
+    capture_metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'document_type'], name='unique_user_kyc_document_type'),
+        ]
+
+
+class KYCVerification(models.Model):
+    RECOMMENDATIONS = [
+        ('manual_review', 'Manual Review'),
+        ('likely_match', 'Likely Match'),
+        ('needs_attention', 'Needs Attention'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='kyc_verification')
+    similarity_score = models.FloatField(null=True, blank=True)
+    pose_challenge_passed = models.BooleanField(default=False)
+    recommendation = models.CharField(max_length=30, choices=RECOMMENDATIONS, default='manual_review')
+    details = models.JSONField(default=dict, blank=True)
+    evaluated_at = models.DateTimeField(auto_now=True)
 
 
 class CreditApplication(models.Model):
@@ -582,6 +608,7 @@ class ConsentLog(models.Model):
         ('marketing_communications', 'Marketing Communications'),
         ('data_sharing',             'Data Sharing'),
         ('data_erasure_requested',   'Data Erasure Request'),
+        ('biometric_identity_verification', 'Biometric Identity Verification'),
     ]
 
     id           = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
