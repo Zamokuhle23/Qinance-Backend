@@ -209,3 +209,36 @@ class ManagedAccountAuthenticationTests(APITestCase):
         }, format='json')
         self.assertEqual(resumed.status_code, 200)
         self.assertEqual(resumed.data['resume_stage'], 'identity_verification')
+
+    def test_web_id_capture_is_perspective_corrected_on_server(self):
+        import cv2
+        import numpy as np
+
+        applicant = User.objects.create_user(
+            phone='+26876999995', email='scanner@example.com',
+            full_name='Scanner Applicant', password=self.password,
+            role='customer', kyc_status='pending', is_phone_verified=True,
+        )
+        image = np.full((800, 1200, 3), 35, dtype=np.uint8)
+        corners = np.array([[170, 125], [1030, 175], [970, 675], [225, 710]], dtype=np.int32)
+        cv2.fillConvexPoly(image, corners, (220, 235, 245))
+        cv2.polylines(image, [corners], True, (5, 5, 5), 12)
+        cv2.rectangle(image, (310, 260), (490, 480), (25, 25, 25), -1)
+        encoded, jpeg = cv2.imencode('.jpg', image)
+        self.assertTrue(encoded)
+
+        self.client.force_authenticate(applicant)
+        response = self.client.post('/api/auth/kyc/upload/', {
+            'document_type': 'id',
+            'biometric_consent': 'true',
+            'server_correct_id': 'true',
+            'file': SimpleUploadedFile('camera-id.jpg', jpeg.tobytes(), content_type='image/jpeg'),
+        }, format='multipart')
+        self.assertEqual(response.status_code, 200)
+        document = applicant.documents.get(document_type='id')
+        self.assertTrue(document.capture_metadata['server_corrected'])
+        corrected = cv2.imread(document.file.path)
+        self.assertIsNotNone(corrected)
+        corrected_height, corrected_width = corrected.shape[:2]
+        self.assertGreater(corrected_width, corrected_height)
+        self.assertGreater(corrected_width, 700)

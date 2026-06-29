@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from django.conf import settings
+from django.core.files.base import ContentFile
 
 from .models import KYCDocument, KYCVerification
 
@@ -8,6 +9,70 @@ from .models import KYCDocument, KYCVerification
 MODEL_DIR = Path(settings.BASE_DIR) / 'kyc_models'
 DETECTOR_MODEL = MODEL_DIR / 'face_detection_yunet_2023mar.onnx'
 RECOGNIZER_MODEL = MODEL_DIR / 'face_recognition_sface_2021dec.onnx'
+
+
+def correct_id_document(uploaded_file):
+    """Detect and perspective-correct a web camera ID capture on the server."""
+    import cv2
+    import numpy as np
+
+    uploaded_file.seek(0)
+    raw = uploaded_file.read()
+    uploaded_file.seek(0)
+    image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise ValueError('The ID photo could not be read. Please retake it.')
+
+    height, width = image.shape[:2]
+    detection_width = min(width, 1100)
+    scale = detection_width / width
+    detection = cv2.resize(image, (detection_width, round(height * scale)), interpolation=cv2.INTER_AREA)
+    gray = cv2.cvtColor(detection, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(gray, 55, 160)
+    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+    best = None
+    best_area = 0
+    minimum_area = detection.shape[0] * detection.shape[1] * 0.16
+    for contour in contours:
+        perimeter = cv2.arcLength(contour, True)
+        polygon = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+        area = abs(cv2.contourArea(polygon))
+        if len(polygon) == 4 and area > minimum_area and area > best_area:
+            best, best_area = polygon, area
+    if best is None:
+        raise ValueError('ID edges were not clear. Place the entire ID on a dark contrasting surface and retake it.')
+
+    points = best.reshape(4, 2).astype('float32') / scale
+    ordered = np.zeros((4, 2), dtype='float32')
+    point_sums = points.sum(axis=1)
+    point_differences = np.diff(points, axis=1).reshape(-1)
+    ordered[0] = points[np.argmin(point_sums)]       # top-left
+    ordered[2] = points[np.argmax(point_sums)]       # bottom-right
+    ordered[1] = points[np.argmin(point_differences)] # top-right
+    ordered[3] = points[np.argmax(point_differences)] # bottom-left
+    top_left, top_right, bottom_right, bottom_left = ordered
+    output_width = round(max(np.linalg.norm(top_right - top_left), np.linalg.norm(bottom_right - bottom_left)))
+    output_height = round(max(np.linalg.norm(bottom_left - top_left), np.linalg.norm(bottom_right - top_right)))
+    if output_width < 240 or output_height < 140:
+        raise ValueError('The ID is too small in the photo. Move closer and retake it.')
+
+    destination = np.array([
+        [0, 0], [output_width - 1, 0],
+        [output_width - 1, output_height - 1], [0, output_height - 1],
+    ], dtype='float32')
+    transform = cv2.getPerspectiveTransform(ordered, destination)
+    corrected = cv2.warpPerspective(image, transform, (output_width, output_height), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    encoded, jpeg = cv2.imencode('.jpg', corrected, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    if not encoded:
+        raise ValueError('The corrected ID could not be encoded. Please retake it.')
+    return ContentFile(jpeg.tobytes(), name='corrected-id.jpg'), {
+        'server_corrected': True,
+        'source_size': [width, height],
+        'corrected_size': [output_width, output_height],
+    }
 
 
 def _read_image(document):

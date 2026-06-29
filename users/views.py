@@ -521,12 +521,24 @@ class UploadKYCDocumentView(APIView):
             if document_type not in allowed_types:
                 return Response({'error': 'Upload the ID and guided centre, left, and right selfie captures.'}, status=400)
 
+            corrected_file = None
+            capture_metadata = {}
+            if document_type == 'id' and str(request.data.get('server_correct_id', '')).lower() in ('true', '1', 'yes'):
+                from .kyc_vision import correct_id_document
+                try:
+                    corrected_file, capture_metadata = correct_id_document(serializer.validated_data['file'])
+                except ValueError as error:
+                    return Response({'error': str(error)}, status=400)
+
             KYCDocument.objects.filter(
                 user=request.user,
                 document_type=document_type,
             ).delete()
 
-            serializer.save(user=request.user)
+            save_values = {'user': request.user, 'capture_metadata': capture_metadata}
+            if corrected_file is not None:
+                save_values['file'] = corrected_file
+            serializer.save(**save_values)
 
             uploaded = set(request.user.documents.values_list('document_type', flat=True))
             required = {'id', 'selfie_front', 'selfie_left', 'selfie_right'}
