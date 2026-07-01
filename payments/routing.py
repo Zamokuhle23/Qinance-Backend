@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.db import transaction
+from django.urls import re_path
 from django.utils import timezone
 
 from .models import (
@@ -12,6 +13,15 @@ from .models import (
     Wallet,
     WalletEntry,
 )
+from . import consumers
+
+
+websocket_urlpatterns = [
+    re_path(
+        r'ws/session/(?P<session_id>[0-9a-f-]+)/$',
+        consumers.PaymentSessionConsumer.as_asgi(),
+    ),
+]
 
 
 class RoutingError(ValueError):
