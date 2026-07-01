@@ -1,8 +1,12 @@
 import uuid
 import random
 import hashlib
+import secrets
+from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 
 
@@ -52,6 +56,15 @@ class Merchant(models.Model):
     dispute_count     = models.IntegerField(default=0)
     transaction_count = models.IntegerField(default=0)
     sound_id          = models.PositiveIntegerField(unique=True, null=True, db_index=True)
+    default_settlement_destination = models.CharField(
+        max_length=20,
+        choices=[('wallet', 'Qinance Wallet'), ('linked', 'Linked Account')],
+        default='wallet',
+    )
+    default_settlement_account = models.ForeignKey(
+        'LinkedAccount', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='merchant_defaults',
+    )
 
     def __str__(self):
         return self.name
@@ -120,6 +133,19 @@ class Customer(models.Model):
     is_active  = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     sound_id   = models.PositiveIntegerField(unique=True, null=True, db_index=True)
+    default_payment_source = models.CharField(
+        max_length=20,
+        choices=[
+            ('wallet', 'Qinance Wallet'),
+            ('credit', 'Qinance Credit'),
+            ('linked', 'Linked Account'),
+        ],
+        default='wallet',
+    )
+    default_payment_account = models.ForeignKey(
+        'LinkedAccount', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='customer_defaults',
+    )
 
     @property
     def available_credit(self):
@@ -150,6 +176,128 @@ class Customer(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+
+
+def generate_routing_key():
+    return secrets.token_hex(4)
+
+
+class LinkedAccount(models.Model):
+    ACCOUNT_TYPES = [('bank', 'Bank Account'), ('momo', 'MTN MoMo')]
+    STATUS_CHOICES = [('active', 'Active'), ('suspended', 'Suspended'), ('removed', 'Removed')]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    customer = models.ForeignKey(
+        Customer, on_delete=models.CASCADE, null=True, blank=True, related_name='linked_accounts',
+    )
+    merchant = models.ForeignKey(
+        Merchant, on_delete=models.CASCADE, null=True, blank=True, related_name='linked_accounts',
+    )
+    account_type = models.CharField(max_length=20, choices=ACCOUNT_TYPES, default='bank')
+    provider = models.CharField(max_length=50)
+    display_name = models.CharField(max_length=100)
+    account_last4 = models.CharField(max_length=4)
+    provider_reference = models.CharField(max_length=150, blank=True)
+    routing_key = models.CharField(max_length=8, unique=True, default=generate_routing_key, editable=False)
+    can_debit = models.BooleanField(default=True)
+    can_credit = models.BooleanField(default=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def clean(self):
+        if bool(self.customer_id) == bool(self.merchant_id):
+            raise ValidationError('A linked account must belong to exactly one customer or merchant.')
+
+    @property
+    def masked_label(self):
+        return f'{self.display_name} •••• {self.account_last4}'
+
+    class Meta:
+        ordering = ['display_name', 'account_last4']
+        constraints = [
+            models.CheckConstraint(
+                condition=(Q(customer__isnull=False, merchant__isnull=True) | Q(customer__isnull=True, merchant__isnull=False)),
+                name='linked_account_exactly_one_owner',
+            ),
+        ]
+
+
+class Wallet(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    customer = models.OneToOneField(
+        Customer, on_delete=models.CASCADE, null=True, blank=True, related_name='wallet',
+    )
+    merchant = models.OneToOneField(
+        Merchant, on_delete=models.CASCADE, null=True, blank=True, related_name='wallet',
+    )
+    currency = models.CharField(max_length=3, default='SZL')
+    balance = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def clean(self):
+        if bool(self.customer_id) == bool(self.merchant_id):
+            raise ValidationError('A wallet must belong to exactly one customer or merchant.')
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(Q(customer__isnull=False, merchant__isnull=True) | Q(customer__isnull=True, merchant__isnull=False)),
+                name='wallet_exactly_one_owner',
+            ),
+            models.CheckConstraint(condition=Q(balance__gte=0), name='wallet_non_negative_balance'),
+        ]
+
+
+class ImmutableWalletEntryQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError('Wallet ledger entries are immutable.')
+
+    def delete(self):
+        raise ValidationError('Wallet ledger entries cannot be deleted; post a reversing entry instead.')
+
+
+class WalletEntry(models.Model):
+    ENTRY_TYPES = [
+        ('topup', 'Top up'), ('payment', 'Payment'), ('receipt', 'Receipt'),
+        ('settlement', 'External settlement'), ('refund', 'Refund'), ('adjustment', 'Adjustment'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    wallet = models.ForeignKey(Wallet, on_delete=models.PROTECT, related_name='entries')
+    entry_type = models.CharField(max_length=20, choices=ENTRY_TYPES)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    balance_after = models.DecimalField(max_digits=14, decimal_places=2)
+    reference = models.CharField(max_length=150)
+    idempotency_key = models.CharField(max_length=180, unique=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    objects = ImmutableWalletEntryQuerySet.as_manager()
+
+    def save(self, *args, **kwargs):
+        if self.pk and type(self).objects.filter(pk=self.pk).exists():
+            raise ValidationError('Wallet ledger entries are immutable.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError('Wallet ledger entries cannot be deleted; post a reversing entry instead.')
+
+    class Meta:
+        ordering = ['-created_at']
+
+
+class ExternalSettlement(models.Model):
+    STATUS_CHOICES = [('pending', 'Pending'), ('settled', 'Settled'), ('failed', 'Failed'), ('reversed', 'Reversed')]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    merchant = models.ForeignKey(Merchant, on_delete=models.PROTECT, related_name='external_settlements')
+    linked_account = models.ForeignKey(LinkedAccount, on_delete=models.PROTECT, related_name='settlements')
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    reference = models.CharField(max_length=150, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    settled_at = models.DateTimeField(null=True, blank=True)
 
 
 # ── Card Details ──────────────────────────────────────────────────────────────
@@ -300,6 +448,16 @@ class PaymentSession(models.Model):
     jit_bank     = models.CharField(max_length=100, blank=True)
     created_at   = models.DateTimeField(auto_now_add=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
+    payment_source = models.CharField(max_length=20, blank=True)
+    payment_source_account = models.ForeignKey(
+        LinkedAccount, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='payment_sessions_as_source',
+    )
+    settlement_destination = models.CharField(max_length=20, blank=True)
+    settlement_account = models.ForeignKey(
+        LinkedAccount, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='payment_sessions_as_destination',
+    )
 
     def __str__(self):
         return f'{self.merchant.name} — E{self.amount} — {self.status}'
@@ -610,6 +768,16 @@ class PendingSettlement(models.Model):
     settle_after  = models.DateTimeField()
     settled_at    = models.DateTimeField(null=True, blank=True)
     conflict_note = models.TextField(blank=True)
+    payment_source = models.CharField(max_length=20, default='linked')
+    payment_source_account = models.ForeignKey(
+        LinkedAccount, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='sound_settlements_as_source',
+    )
+    settlement_destination = models.CharField(max_length=20, default='wallet')
+    settlement_account = models.ForeignKey(
+        LinkedAccount, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='sound_settlements_as_destination',
+    )
 
     class Meta:
         ordering = ['-trust_score', 'received_at']

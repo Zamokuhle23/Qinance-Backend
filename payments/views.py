@@ -22,7 +22,12 @@ from .models import (
     CreditTransaction, PaymentSession, DebitMandate,
     AgentTransaction, MerchantAgentProfile, AgentSession,
     CustomerDeviceSecret, PendingSettlement,
-    LinkedMoMoAccount, MoMoTransaction,
+    LinkedMoMoAccount, MoMoTransaction, LinkedAccount, WalletEntry,
+)
+from .routing import (
+    RoutingError, apply_payment_routes, credit_is_available, get_wallet,
+    post_wallet_entry, resolve_customer_source, resolve_merchant_destination,
+    routing_snapshot,
 )
 from . import momo as momo_client
 from .serializers import (
@@ -83,6 +88,9 @@ def session_response(session, merchant=None):
         'amount': str(session.amount),
         'status': session.status,
         'funding_mode': session.funding_mode,
+        'payment_source': session.payment_source,
+        'settlement_destination': session.settlement_destination,
+        'settlement_account_id': str(session.settlement_account_id) if session.settlement_account_id else None,
         'qr_url': f'/m/{m.id}/{session.id}',
     }
 
@@ -247,6 +255,14 @@ class CreateSessionView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         merchant = get_object_or_404(Merchant, pk=serializer.validated_data['merchant_id'])
+        try:
+            destination, destination_account = resolve_merchant_destination(
+                merchant,
+                serializer.validated_data.get('settlement_destination'),
+                serializer.validated_data.get('settlement_account_id'),
+            )
+        except RoutingError as error:
+            return Response({'error': str(error)}, status=400)
 
         # Cancel existing pending sessions for this merchant
         PaymentSession.objects.filter(
@@ -257,6 +273,8 @@ class CreateSessionView(APIView):
             merchant=merchant,
             amount=serializer.validated_data['amount'],
             status='waiting',
+            settlement_destination=destination,
+            settlement_account=destination_account,
         )
         return Response(session_response(session, merchant), status=status.HTTP_201_CREATED)
 
@@ -291,12 +309,17 @@ class MerchantLatestSessionView(APIView):
 
 
 class ConfirmPaymentView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
     def post(self, request):
         serializer = ConfirmPaymentSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         data = serializer.validated_data
+        if request.user.role != 'customer' or request.user.phone != data['customer_phone']:
+            return Response({'error': 'Payments can only be authorised by the signed-in customer.'}, status=403)
         session = get_object_or_404(PaymentSession, pk=data['session_id'])
 
         if session.status == 'confirmed':
@@ -313,6 +336,24 @@ class ConfirmPaymentView(APIView):
         funding_mode = data['funding_mode']
         amount = session.amount
 
+        try:
+            if funding_mode in ('wallet', 'credit', 'linked'):
+                payment_source, payment_source_account = resolve_customer_source(
+                    customer,
+                    funding_mode,
+                    data.get('payment_source_account_id'),
+                    amount=amount,
+                )
+            else:
+                payment_source, payment_source_account = funding_mode, None
+            destination, destination_account = resolve_merchant_destination(
+                session.merchant,
+                session.settlement_destination or None,
+                session.settlement_account_id,
+            )
+        except RoutingError as error:
+            return Response({'error': str(error)}, status=400)
+
         # ── Compliance checks (AML, limits, velocity, fraud) ──────────────
         compliance = run_payment_compliance(customer, amount, funding_mode, session)
         if not compliance.allowed:
@@ -320,7 +361,7 @@ class ConfirmPaymentView(APIView):
 
         # ── Credit card payment ───────────────────────────────────────────
         if funding_mode == 'credit':
-            card = customer.card
+            card = get_or_create_card(customer)
             if card.status == 'frozen':
                 return Response({'error': 'Your Kona card is frozen.'}, status=400)
             if customer.available_credit < amount:
@@ -351,6 +392,31 @@ class ConfirmPaymentView(APIView):
             )
 
             session.funding_mode = 'credit'
+
+        elif funding_mode == 'wallet':
+            CreditTransaction.objects.create(
+                customer=customer,
+                transaction_type='purchase',
+                funding_mode='bank',
+                amount=amount,
+                session=session,
+                merchant=session.merchant,
+                description=f'Qinance Wallet purchase at {session.merchant.name}',
+            )
+            session.funding_mode = 'wallet'
+
+        elif funding_mode == 'linked':
+            CreditTransaction.objects.create(
+                customer=customer,
+                transaction_type='purchase',
+                funding_mode='bank',
+                amount=amount,
+                session=session,
+                merchant=session.merchant,
+                description=f'Linked account payment at {session.merchant.name} via {payment_source_account.masked_label}',
+            )
+            session.bank_used = payment_source_account.provider
+            session.funding_mode = 'linked'
 
         # ── Bank transfer (EPS) ───────────────────────────────────────────
         elif funding_mode == 'bank':
@@ -434,9 +500,22 @@ class ConfirmPaymentView(APIView):
 
         # ── Confirm session ───────────────────────────────────────────────
         session.customer = customer
+        session.payment_source = payment_source
+        session.payment_source_account = payment_source_account
+        session.settlement_destination = destination
+        session.settlement_account = destination_account
         session.status = 'confirmed'
         session.confirmed_at = timezone.now()
         session.save()
+
+        try:
+            apply_payment_routes(
+                customer, session.merchant, amount, payment_source, destination,
+                str(session.id), destination_account,
+            )
+        except RoutingError as error:
+            transaction.set_rollback(True)
+            return Response({'error': str(error)}, status=400)
 
         # ── Persist compliance flags and regulatory reports ──────────────
         save_compliance_flags(customer, compliance)
@@ -476,6 +555,143 @@ class ConfirmPaymentView(APIView):
             'funding_mode': funding_mode,
             'message': 'Payment confirmed successfully.',
         })
+
+
+# ── Wallets, linked accounts, and routing preferences ────────────────────────
+
+def _routing_owner(user):
+    if user.role == 'customer':
+        return Customer.objects.filter(phone=user.phone).first()
+    if user.role == 'merchant':
+        return Merchant.objects.filter(phone=user.phone).first()
+    return None
+
+
+class RoutingProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        owner = _routing_owner(request.user)
+        if not owner:
+            return Response({'error': 'No customer or merchant payment profile found.'}, status=404)
+        return Response(routing_snapshot(owner))
+
+    def patch(self, request):
+        owner = _routing_owner(request.user)
+        if not owner:
+            return Response({'error': 'No customer or merchant payment profile found.'}, status=404)
+        selection = request.data.get('default_type')
+        account_id = request.data.get('default_account_id')
+        try:
+            if isinstance(owner, Customer):
+                source, account = resolve_customer_source(owner, selection, account_id)
+                owner.default_payment_source = source
+                owner.default_payment_account = account
+                owner.save(update_fields=['default_payment_source', 'default_payment_account'])
+            else:
+                destination, account = resolve_merchant_destination(owner, selection, account_id)
+                owner.default_settlement_destination = destination
+                owner.default_settlement_account = account
+                owner.save(update_fields=['default_settlement_destination', 'default_settlement_account'])
+        except RoutingError as error:
+            return Response({'error': str(error)}, status=400)
+        return Response(routing_snapshot(owner))
+
+
+class LinkedAccountListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        owner = _routing_owner(request.user)
+        if not owner:
+            return Response({'error': 'No customer or merchant payment profile found.'}, status=404)
+        account_type = request.data.get('account_type', 'bank')
+        provider = str(request.data.get('provider', '')).strip().lower()
+        display_name = str(request.data.get('display_name', '')).strip()
+        account_last4 = ''.join(filter(str.isdigit, str(request.data.get('account_last4', ''))))[-4:]
+        if account_type not in ('bank', 'momo') or not provider or not display_name or len(account_last4) != 4:
+            return Response({'error': 'Account type, provider, display name, and the last four digits are required.'}, status=400)
+        values = {
+            'account_type': account_type,
+            'provider': provider,
+            'display_name': display_name,
+            'account_last4': account_last4,
+            'provider_reference': str(request.data.get('provider_reference', '')).strip(),
+            'can_debit': isinstance(owner, Customer),
+            'can_credit': True,
+        }
+        if isinstance(owner, Customer):
+            values['customer'] = owner
+        else:
+            values['merchant'] = owner
+        account = LinkedAccount.objects.create(**values)
+        return Response(routing_snapshot(owner), status=201)
+
+
+class LinkedAccountRemoveView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, account_id):
+        owner = _routing_owner(request.user)
+        if not owner:
+            return Response({'error': 'No payment profile found.'}, status=404)
+        account = owner.linked_accounts.filter(id=account_id, status='active').first()
+        if not account:
+            return Response({'error': 'Linked account not found.'}, status=404)
+        account.status = 'removed'
+        account.save(update_fields=['status'])
+        if isinstance(owner, Customer) and owner.default_payment_account_id == account.id:
+            owner.default_payment_source = 'wallet'
+            owner.default_payment_account = None
+            owner.save(update_fields=['default_payment_source', 'default_payment_account'])
+        elif isinstance(owner, Merchant) and owner.default_settlement_account_id == account.id:
+            owner.default_settlement_destination = 'wallet'
+            owner.default_settlement_account = None
+            owner.save(update_fields=['default_settlement_destination', 'default_settlement_account'])
+        return Response(routing_snapshot(owner))
+
+
+class WalletTopUpView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        owner = _routing_owner(request.user)
+        if not isinstance(owner, Customer):
+            return Response({'error': 'Only customer wallets can be topped up.'}, status=403)
+        try:
+            amount = Decimal(str(request.data.get('amount'))).quantize(Decimal('0.01'))
+        except Exception:
+            return Response({'error': 'Enter a valid top-up amount.'}, status=400)
+        if amount <= 0:
+            return Response({'error': 'Top-up amount must be greater than zero.'}, status=400)
+        try:
+            _, account = resolve_customer_source(owner, 'linked', request.data.get('linked_account_id'))
+            entry = post_wallet_entry(
+                get_wallet(owner), amount, 'topup', f'Top up from {account.masked_label}',
+                f'topup:{request.user.id}:{request.data.get("idempotency_key") or timezone.now().timestamp()}',
+                {'linked_account_id': str(account.id), 'simulated': True},
+            )
+        except RoutingError as error:
+            return Response({'error': str(error)}, status=400)
+        return Response({'entry_id': str(entry.id), **routing_snapshot(owner)})
+
+
+class WalletEntryListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        owner = _routing_owner(request.user)
+        if not owner:
+            return Response({'error': 'No payment profile found.'}, status=404)
+        wallet = get_wallet(owner)
+        return Response([{
+            'id': str(entry.id),
+            'entry_type': entry.entry_type,
+            'amount': str(entry.amount),
+            'balance_after': str(entry.balance_after),
+            'reference': entry.reference,
+            'created_at': entry.created_at,
+        } for entry in wallet.entries.all()[:100]])
 
 
 # ── Repayments ────────────────────────────────────────────────────────────────
@@ -1414,16 +1630,15 @@ def _hash_token(token):
 
 
 def _verify_sound_token(token, secret, customer_sound_id):
-    """Verify identity token: cid:ts:hmac8
-    Customer proves who they are. Merchant supplies the amount independently."""
+    """Verify legacy cid:ts:hmac8 or routed cid:ts:source:hmac8 tokens."""
     try:
         parts = token.split(':')
-        if len(parts) != 3:
+        if len(parts) not in (3, 4):
             return False
-        token_cid, ts, token_hmac = parts
+        token_cid, token_hmac = parts[0], parts[-1]
         if int(token_cid) != int(customer_sound_id):
             return False
-        message  = f'{token_cid}:{ts}'
+        message = ':'.join(parts[:-1])
         expected = _hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()[:8]
         return _hmac.compare_digest(token_hmac, expected)
     except Exception:
@@ -1433,13 +1648,27 @@ def _verify_sound_token(token, secret, customer_sound_id):
 def _verify_token_timestamp(token):
     try:
         parts = token.split(':')
-        if len(parts) != 3:
+        if len(parts) not in (3, 4):
             return False
         timestamp_window = int(parts[1])
         current_window   = int(timezone.now().timestamp() / 30)
         return abs(current_window - timestamp_window) <= 1
     except Exception:
         return False
+
+
+def _sound_source(token):
+    parts = token.split(':')
+    if len(parts) == 3:
+        return None, None
+    code = parts[2]
+    if code == 'w':
+        return 'wallet', None
+    if code == 'c':
+        return 'credit', None
+    if code.startswith('l-') and len(code) == 10:
+        return 'linked', code[2:]
+    raise RoutingError('Invalid payment source in contactless token.')
 
 
 def _schedule_settlement(settlement_id):
@@ -1468,15 +1697,6 @@ def _execute_settlement(settlement_id):
         settlement.merchant.transaction_count += 1
         settlement.merchant.trust_score = _calculate_trust_score(settlement.merchant)
         settlement.merchant.save()
-        CreditTransaction.objects.create(
-            customer         = settlement.customer,
-            merchant         = settlement.merchant,
-            transaction_type = 'purchase',
-            funding_mode     = 'bank',
-            amount           = settlement.amount,
-            description      = f'Contactless payment at {settlement.merchant.name}',
-            reference        = str(settlement.id),
-        )
         save_compliance_flags(settlement.customer, compliance)
         if compliance.requires_ctr or compliance.requires_str:
             create_regulatory_report(
@@ -1518,6 +1738,8 @@ class SyncDeviceSecretView(APIView):
 
 
 class ProcessSoundPaymentView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         token       = request.data.get('token')
         amount      = request.data.get('amount')
@@ -1537,6 +1759,8 @@ class ProcessSoundPaymentView(APIView):
             merchant = Merchant.objects.get(id=merchant_id, is_active=True)
         except Merchant.DoesNotExist:
             return Response({'error': 'Merchant not found'}, status=404)
+        if request.user.role != 'merchant' or request.user.phone != merchant.phone:
+            return Response({'error': 'This terminal is not authorised for that merchant.'}, status=403)
         if merchant.sound_id is None:
             with transaction.atomic():
                 max_id = Merchant.objects.select_for_update().aggregate(m=Max('sound_id'))['m'] or 0
@@ -1554,6 +1778,21 @@ class ProcessSoundPaymentView(APIView):
             return Response({'error': 'Invalid token signature'}, status=400)
         if not _verify_token_timestamp(token):
             return Response({'error': 'Token expired — ask customer to regenerate'}, status=400)
+        try:
+            token_source, routing_key = _sound_source(token)
+            payment_source, payment_source_account = resolve_customer_source(
+                customer, token_source, routing_key=routing_key, amount=amount,
+            )
+            destination, destination_account = resolve_merchant_destination(
+                merchant,
+                request.data.get('settlement_destination'),
+                request.data.get('settlement_account_id'),
+            )
+        except RoutingError as error:
+            return Response({'error': str(error)}, status=400)
+        compliance = run_payment_compliance(customer, amount, payment_source, None)
+        if not compliance.allowed:
+            return Response({'error': compliance.reason}, status=400)
         token_hash = _hash_token(token)
         existing = PendingSettlement.objects.filter(token_hash=token_hash).first()
         if existing:
@@ -1568,7 +1807,43 @@ class ProcessSoundPaymentView(APIView):
             amount       = amount,
             trust_score  = trust_score,
             settle_after = timezone.now() + timedelta(seconds=SETTLEMENT_DELAY_SECONDS),
+            payment_source=payment_source,
+            payment_source_account=payment_source_account,
+            settlement_destination=destination,
+            settlement_account=destination_account,
         )
+        try:
+            with transaction.atomic():
+                statement = None
+                if payment_source == 'credit':
+                    locked_customer = Customer.objects.select_for_update().get(pk=customer.pk)
+                    if not credit_is_available(locked_customer, amount):
+                        raise RoutingError('Qinance Credit is not available for this payment.')
+                    locked_customer.current_balance += amount
+                    locked_customer.save(update_fields=['current_balance'])
+                    statement = get_open_statement(locked_customer)
+                    statement.total_purchases += amount
+                    statement.closing_balance = locked_customer.current_balance
+                    statement.save()
+                apply_payment_routes(
+                    customer, merchant, amount, payment_source, destination,
+                    str(settlement.id), destination_account,
+                )
+                CreditTransaction.objects.create(
+                    customer=customer,
+                    merchant=merchant,
+                    transaction_type='purchase',
+                    funding_mode='credit' if payment_source == 'credit' else 'bank',
+                    amount=amount,
+                    statement=statement,
+                    description=f'Contactless payment at {merchant.name}',
+                    reference=str(settlement.id),
+                )
+        except RoutingError as error:
+            settlement.status = 'reversed'
+            settlement.conflict_note = str(error)
+            settlement.save(update_fields=['status', 'conflict_note'])
+            return Response({'error': str(error)}, status=400)
         _schedule_settlement(settlement.id)
         return Response({
             'status':        'confirmed',
@@ -1581,23 +1856,16 @@ class ProcessSoundPaymentView(APIView):
 
 
 def _handle_conflict(existing, new_merchant, customer, amount, token_hash):
-    new_trust = _calculate_trust_score(new_merchant)
-    if new_trust > existing.trust_score:
-        existing.status        = 'cancelled'
-        existing.conflict_note = f'Outranked by {new_merchant.name} (trust {new_trust} vs {existing.trust_score})'
-        existing.save()
-        settlement = PendingSettlement.objects.create(
-            token_hash    = token_hash,
-            customer      = customer,
-            merchant      = new_merchant,
-            amount        = amount,
-            trust_score   = new_trust,
-            settle_after  = timezone.now() + timedelta(seconds=SETTLEMENT_DELAY_SECONDS),
-            conflict_note = f'Won conflict against {existing.merchant.name}',
-        )
-        _schedule_settlement(settlement.id)
-        return Response({'status': 'confirmed', 'message': 'Payment confirmed.', 'settlement_id': str(settlement.id), 'amount': str(amount)})
-    return Response({'status': 'rejected', 'message': 'Token already processed at another merchant.'}, status=400)
+    # A sound token represents one payment attempt. Replays must never move
+    # money twice or be reassigned to a different merchant based on trust.
+    if existing.merchant_id == new_merchant.id and existing.amount == amount:
+        return Response({
+            'status': 'confirmed',
+            'message': 'Payment was already confirmed.',
+            'settlement_id': str(existing.id),
+            'amount': str(existing.amount),
+        })
+    return Response({'status': 'rejected', 'message': 'This contactless token has already been used.'}, status=400)
 
 
 class SoundPaymentStatusView(APIView):

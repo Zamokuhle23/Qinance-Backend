@@ -82,17 +82,20 @@ class DebitMandateSerializer(serializers.ModelSerializer):
 class CreateSessionSerializer(serializers.Serializer):
     merchant_id = serializers.UUIDField()
     amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    settlement_destination = serializers.ChoiceField(choices=['wallet', 'linked'], required=False)
+    settlement_account_id = serializers.UUIDField(required=False, allow_null=True)
 
 
 BANK_CHOICES = ['fnb', 'standard', 'nedbank', 'eswatini_bank', 'momo']
 
 
 class ConfirmPaymentSerializer(serializers.Serializer):
-    FUNDING_CHOICES = ['credit', 'bank', 'jit', 'momo']
+    FUNDING_CHOICES = ['wallet', 'credit', 'linked', 'bank', 'jit', 'momo']
 
     session_id     = serializers.UUIDField()
     customer_phone = serializers.CharField(max_length=20)
     funding_mode   = serializers.ChoiceField(choices=FUNDING_CHOICES)
+    payment_source_account_id = serializers.UUIDField(required=False, allow_null=True)
 
     bank           = serializers.ChoiceField(choices=BANK_CHOICES, required=False, allow_blank=True)
     jit_bank       = serializers.ChoiceField(choices=BANK_CHOICES, required=False, allow_blank=True)

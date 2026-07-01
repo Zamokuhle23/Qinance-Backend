@@ -28,6 +28,13 @@ urlpatterns = [
     path('sessions/confirm/', views.ConfirmPaymentView.as_view()),
     path('sessions/<uuid:session_id>/', views.SessionDetailView.as_view()),
 
+    # Wallets, linked accounts, and payment routing
+    path('routing/profile/', views.RoutingProfileView.as_view()),
+    path('routing/accounts/', views.LinkedAccountListCreateView.as_view()),
+    path('routing/accounts/<uuid:account_id>/', views.LinkedAccountRemoveView.as_view()),
+    path('wallet/top-up/', views.WalletTopUpView.as_view()),
+    path('wallet/entries/', views.WalletEntryListView.as_view()),
+
     # Regulatory reports
     path('regulatory-reports/', views.RegulatoryReportListView.as_view()),
     path('regulatory-reports/<uuid:report_id>/submit/', views.SubmitReportView.as_view()),
