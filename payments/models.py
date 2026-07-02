@@ -102,6 +102,40 @@ class MerchantDocument(models.Model):
 
 # ── Customer ──────────────────────────────────────────────────────────────────
 
+class MerchantLoan(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending Review'),
+        ('approved', 'Approved'),
+        ('active', 'Active'),
+        ('repaid', 'Repaid'),
+        ('rejected', 'Rejected'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    merchant = models.ForeignKey(Merchant, on_delete=models.CASCADE, related_name='loans')
+    requested_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    approved_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    balance_due = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    term_months = models.PositiveSmallIntegerField(default=6)
+    purpose = models.CharField(max_length=250, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    applied_at = models.DateTimeField(auto_now_add=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    due_date = models.DateField(null=True, blank=True)
+
+    @property
+    def monthly_payment(self):
+        if not self.term_months or self.balance_due <= 0:
+            return Decimal('0.00')
+        return (self.balance_due / self.term_months).quantize(Decimal('0.01'))
+
+    def __str__(self):
+        return f'{self.merchant.name} loan E{self.requested_amount} ({self.status})'
+
+    class Meta:
+        ordering = ['-applied_at']
+
+
 class Customer(models.Model):
 
     BANK_CHOICES = [

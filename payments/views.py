@@ -22,7 +22,7 @@ from .models import (
     CreditTransaction, PaymentSession, DebitMandate,
     AgentTransaction, MerchantAgentProfile, AgentSession,
     CustomerDeviceSecret, PendingSettlement,
-    LinkedMoMoAccount, MoMoTransaction, LinkedAccount, WalletEntry,
+    LinkedMoMoAccount, MoMoTransaction, LinkedAccount, WalletEntry, MerchantLoan,
 )
 from .routing import (
     RoutingError, apply_payment_routes, credit_is_available, get_wallet,
@@ -33,7 +33,7 @@ from . import momo as momo_client
 from .serializers import (
     MerchantSerializer, CustomerSerializer, CardDetailsFullSerializer,
     CreditStatementSerializer, CreditTransactionSerializer,
-    PaymentSessionSerializer, DebitMandateSerializer,
+    PaymentSessionSerializer, DebitMandateSerializer, MerchantLoanSerializer,
     CreateSessionSerializer, ConfirmPaymentSerializer,
     RepaymentSerializer, FreezeCardSerializer,
 )
@@ -692,6 +692,37 @@ class WalletEntryListView(APIView):
             'reference': entry.reference,
             'created_at': entry.created_at,
         } for entry in wallet.entries.all()[:100]])
+
+
+class MerchantLoanListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _merchant(self, request):
+        if request.user.role != 'merchant':
+            return None
+        return Merchant.objects.filter(phone=request.user.phone, is_active=True).first()
+
+    def get(self, request):
+        merchant = self._merchant(request)
+        if not merchant:
+            return Response({'error': 'Active merchant account required.'}, status=403)
+        return Response(MerchantLoanSerializer(merchant.loans.all(), many=True).data)
+
+    def post(self, request):
+        merchant = self._merchant(request)
+        if not merchant:
+            return Response({'error': 'Active merchant account required.'}, status=403)
+        if merchant.loans.filter(status__in=['pending', 'approved', 'active']).exists():
+            return Response({'error': 'You already have an open merchant finance application.'}, status=400)
+        serializer = MerchantLoanSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+        amount = serializer.validated_data['requested_amount']
+        term = serializer.validated_data.get('term_months', 6)
+        if amount <= 0 or term not in (3, 6, 9, 12):
+            return Response({'error': 'Enter a valid amount and a 3, 6, 9, or 12 month term.'}, status=400)
+        loan = serializer.save(merchant=merchant)
+        return Response(MerchantLoanSerializer(loan).data, status=201)
 
 
 # ── Repayments ────────────────────────────────────────────────────────────────

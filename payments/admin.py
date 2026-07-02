@@ -10,6 +10,7 @@ from .models import (
     PaymentSession,
     Repayment,
     RegulatoryReport,
+    MerchantLoan,
 )
 
 
@@ -25,6 +26,13 @@ class MerchantDocumentAdmin(admin.ModelAdmin):
     list_display  = ['merchant', 'document_type', 'status', 'uploaded_at']
     list_filter   = ['document_type', 'status']
     search_fields = ['merchant__name']
+
+
+@admin.register(MerchantLoan)
+class MerchantLoanAdmin(admin.ModelAdmin):
+    list_display = ['merchant', 'requested_amount', 'approved_amount', 'balance_due', 'term_months', 'status', 'applied_at']
+    list_filter = ['status', 'term_months']
+    search_fields = ['merchant__name', 'merchant__phone']
 
 
 @admin.register(Customer)

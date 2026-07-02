@@ -40,8 +40,7 @@ class PaymentSessionConsumer(AsyncWebsocketConsumer):
             'type': 'payment_confirmed',
             'session_id': event['session_id'],
             'amount': event['amount'],
-            'bank_used': event['bank_used'],
-            'used_bnpl': event['used_bnpl'],
-            'bnpl_amount': event['bnpl_amount'],
-            'customer_phone': event['customer_phone'],
+            'funding_mode': event.get('funding_mode', ''),
+            'bank_used': event.get('bank_used', ''),
+            'customer_phone': event.get('customer_phone', ''),
         }))

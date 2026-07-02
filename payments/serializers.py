@@ -1,11 +1,23 @@
 from rest_framework import serializers
-from .models import Merchant, Customer, CardDetails, CreditStatement, CreditTransaction, PaymentSession, DebitMandate
+from .models import Merchant, MerchantLoan, Customer, CardDetails, CreditStatement, CreditTransaction, PaymentSession, DebitMandate
 
 
 class MerchantSerializer(serializers.ModelSerializer):
     class Meta:
         model = Merchant
         fields = '__all__'
+
+
+class MerchantLoanSerializer(serializers.ModelSerializer):
+    monthly_payment = serializers.ReadOnlyField()
+
+    class Meta:
+        model = MerchantLoan
+        fields = '__all__'
+        read_only_fields = [
+            'merchant', 'approved_amount', 'balance_due', 'status',
+            'approved_at', 'due_date', 'applied_at',
+        ]
 
 
 class CardDetailsSerializer(serializers.ModelSerializer):

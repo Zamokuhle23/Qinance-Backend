@@ -34,6 +34,7 @@ urlpatterns = [
     path('routing/accounts/<uuid:account_id>/', views.LinkedAccountRemoveView.as_view()),
     path('wallet/top-up/', views.WalletTopUpView.as_view()),
     path('wallet/entries/', views.WalletEntryListView.as_view()),
+    path('merchant/loans/', views.MerchantLoanListCreateView.as_view()),
 
     # Regulatory reports
     path('regulatory-reports/', views.RegulatoryReportListView.as_view()),

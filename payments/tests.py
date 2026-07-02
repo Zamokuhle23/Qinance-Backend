@@ -1,11 +1,36 @@
+import json
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.test import SimpleTestCase
 from rest_framework.test import APITestCase
 
 from users.models import User
 from .models import CardDetails, Customer, LinkedAccount, Merchant, WalletEntry
 from .routing import get_wallet, post_wallet_entry
+from .consumers import PaymentSessionConsumer
+
+
+class PaymentSessionConsumerTests(SimpleTestCase):
+    async def test_confirmation_accepts_current_broadcast_payload(self):
+        consumer = PaymentSessionConsumer()
+        messages = []
+
+        async def capture_send(*, text_data=None, bytes_data=None, close=False):
+            messages.append(json.loads(text_data))
+
+        consumer.send = capture_send
+        await consumer.payment_confirmed({
+            'type': 'payment_confirmed',
+            'session_id': 'session-id',
+            'amount': '10.00',
+            'funding_mode': 'wallet',
+            'bank_used': '',
+            'customer_phone': '76000001',
+        })
+
+        self.assertEqual(messages[0]['type'], 'payment_confirmed')
+        self.assertEqual(messages[0]['funding_mode'], 'wallet')
 
 
 class PaymentRoutingTests(APITestCase):
@@ -141,3 +166,39 @@ class PaymentRoutingTests(APITestCase):
         with self.assertRaises(ValidationError):
             WalletEntry.objects.filter(pk=entry.pk).delete()
         self.assertEqual(WalletEntry.objects.get(pk=entry.pk).amount, Decimal('50.00'))
+
+    def test_merchant_can_apply_for_and_list_a_loan(self):
+        self.client.force_authenticate(self.merchant_user)
+        created = self.client.post('/api/merchant/loans/', {
+            'requested_amount': '5000.00',
+            'term_months': 6,
+            'purpose': 'Buy stock',
+        }, format='json')
+
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data['status'], 'pending')
+        self.assertEqual(created.data['requested_amount'], '5000.00')
+
+        listed = self.client.get('/api/merchant/loans/')
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(len(listed.data), 1)
+        self.assertEqual(listed.data[0]['purpose'], 'Buy stock')
+
+    def test_merchant_cannot_open_two_loan_applications(self):
+        self.client.force_authenticate(self.merchant_user)
+        application = {
+            'requested_amount': '5000.00',
+            'term_months': 6,
+            'purpose': 'Buy stock',
+        }
+        self.assertEqual(
+            self.client.post('/api/merchant/loans/', application, format='json').status_code,
+            201,
+        )
+        duplicate = self.client.post('/api/merchant/loans/', application, format='json')
+        self.assertEqual(duplicate.status_code, 400)
+
+    def test_customer_cannot_access_merchant_loans(self):
+        self.client.force_authenticate(self.customer_user)
+        response = self.client.get('/api/merchant/loans/')
+        self.assertEqual(response.status_code, 403)
