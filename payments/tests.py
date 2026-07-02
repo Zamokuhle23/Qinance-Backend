@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase
 from rest_framework.test import APITestCase
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from users.models import User
 from .models import CardDetails, Customer, LinkedAccount, Merchant, WalletEntry
@@ -70,6 +71,12 @@ class PaymentRoutingTests(APITestCase):
         self.customer_user.save(update_fields=['credit_status'])
         response = self.client.get('/api/routing/profile/')
         self.assertFalse(response.data['credit']['eligible'])
+
+    def test_access_token_can_be_refreshed_without_logging_in_again(self):
+        refresh = str(RefreshToken.for_user(self.customer_user))
+        response = self.client.post('/api/auth/token/refresh/', {'refresh': refresh}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['access'])
 
     def test_default_and_transaction_override_are_separate(self):
         self.client.force_authenticate(self.customer_user)
