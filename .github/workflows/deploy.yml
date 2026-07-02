@@ -1,0 +1,46 @@
+name: Deploy Qinance Backend
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to Oracle Ubuntu
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+
+            cd ${{ secrets.PROJECT_PATH }}
+
+            echo "Pulling latest code..."
+            git reset --hard
+            git pull origin main
+
+            echo "Activating virtual environment..."
+            source .venv/bin/activate
+
+            echo "Installing dependencies..."
+            pip install -r requirements.txt
+
+            echo "Running migrations..."
+            python manage.py migrate
+
+            echo "Collecting static files..."
+            python manage.py collectstatic --noinput
+
+            echo "Restarting service..."
+            sudo systemctl restart ${{ secrets.SERVICE_NAME }}
+
+            echo "Checking service status..."
+            sudo systemctl is-active ${{ secrets.SERVICE_NAME }}
+
+            echo "Deployment complete."
