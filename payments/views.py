@@ -39,6 +39,14 @@ from .serializers import (
 )
 
 
+def can_access_customer(request, phone):
+    return request.user.is_authenticated and (
+        request.user.is_staff
+        or request.user.is_superuser
+        or (request.user.role == 'customer' and request.user.phone == phone)
+    )
+
+
 # ── FCM Push ─────────────────────────────────────────────────────────────────
 
 def send_payment_push(user, merchant_name, amount):
@@ -217,9 +225,12 @@ class CustomerListView(APIView):
 
 
 class CustomerDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request, phone):
+        if not can_access_customer(request, phone):
+            return Response({'error': 'You cannot access another customer account.'}, status=403)
         customer = get_object_or_404(Customer, phone=phone)
-        get_or_create_card(customer)
         return Response(CustomerSerializer(customer).data)
 
 
@@ -227,18 +238,31 @@ class CustomerDetailView(APIView):
 
 class CardDetailView(APIView):
     """Get full card details for the logged-in customer."""
+    permission_classes = [IsAuthenticated]
+
     def get(self, request, phone):
+        if not can_access_customer(request, phone):
+            return Response({'error': 'You cannot access another customer card.'}, status=403)
         customer = get_object_or_404(Customer, phone=phone)
+        if not (request.user.is_staff or request.user.is_superuser) and request.user.credit_status != 'approved':
+            return Response({'error': 'Qinance Credit is not active for this account.'}, status=404)
         card = get_or_create_card(customer)
         return Response(CardDetailsFullSerializer(card).data)
 
 
 class FreezeCardView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         serializer = FreezeCardSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        customer = get_object_or_404(Customer, phone=serializer.validated_data['customer_phone'])
+        phone = serializer.validated_data['customer_phone']
+        if not can_access_customer(request, phone):
+            return Response({'error': 'You cannot update another customer card.'}, status=403)
+        if not (request.user.is_staff or request.user.is_superuser) and request.user.credit_status != 'approved':
+            return Response({'error': 'Qinance Credit is not active for this account.'}, status=404)
+        customer = get_object_or_404(Customer, phone=phone)
         card = get_or_create_card(customer)
         action = serializer.validated_data['action']
         card.status = 'frozen' if action == 'freeze' else 'active'
@@ -249,25 +273,33 @@ class FreezeCardView(APIView):
 # ── Payment Sessions ──────────────────────────────────────────────────────────
 
 class CreateSessionView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         serializer = CreateSessionSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         merchant = get_object_or_404(Merchant, pk=serializer.validated_data['merchant_id'])
+        if request.user.role not in ('merchant', 'customer'):
+            return Response({'error': 'A customer or merchant account is required.'}, status=403)
+        is_merchant_owner = request.user.role == 'merchant' and request.user.phone == merchant.phone
+        if request.user.role == 'merchant' and not is_merchant_owner:
+            return Response({'error': 'You cannot create payments for another merchant.'}, status=403)
         try:
             destination, destination_account = resolve_merchant_destination(
                 merchant,
-                serializer.validated_data.get('settlement_destination'),
-                serializer.validated_data.get('settlement_account_id'),
+                serializer.validated_data.get('settlement_destination') if is_merchant_owner else None,
+                serializer.validated_data.get('settlement_account_id') if is_merchant_owner else None,
             )
         except RoutingError as error:
             return Response({'error': str(error)}, status=400)
 
         # Cancel existing pending sessions for this merchant
-        PaymentSession.objects.filter(
-            merchant=merchant, status='waiting'
-        ).update(status='expired')
+        if is_merchant_owner:
+            PaymentSession.objects.filter(
+                merchant=merchant, status='waiting'
+            ).update(status='expired')
 
         session = PaymentSession.objects.create(
             merchant=merchant,
@@ -320,6 +352,8 @@ class ConfirmPaymentView(APIView):
         data = serializer.validated_data
         if request.user.role != 'customer' or request.user.phone != data['customer_phone']:
             return Response({'error': 'Payments can only be authorised by the signed-in customer.'}, status=403)
+        if not request.user.check_pin(data['pin']):
+            return Response({'error': 'Incorrect transaction PIN.'}, status=403)
         session = get_object_or_404(PaymentSession, pk=data['session_id'])
 
         if session.status == 'confirmed':
@@ -718,22 +752,26 @@ class MerchantLoanListCreateView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
         amount = serializer.validated_data['requested_amount']
-        term = serializer.validated_data.get('term_months', 6)
-        if amount <= 0 or term not in (3, 6, 9, 12):
-            return Response({'error': 'Enter a valid amount and a 3, 6, 9, or 12 month term.'}, status=400)
-        loan = serializer.save(merchant=merchant)
+        frequency = serializer.validated_data.get('repayment_frequency', 'weekly')
+        if amount <= 0 or frequency not in ('daily', 'weekly', 'biweekly'):
+            return Response({'error': 'Enter a valid amount and choose daily, weekly, or biweekly repayment.'}, status=400)
+        loan = serializer.save(merchant=merchant, term_months=6, interest_rate=Decimal('20.00'))
         return Response(MerchantLoanSerializer(loan).data, status=201)
 
 
 # ── Repayments ────────────────────────────────────────────────────────────────
 
 class MakeRepaymentView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         serializer = RepaymentSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         data = serializer.validated_data
+        if not can_access_customer(request, data['customer_phone']):
+            return Response({'error': 'You cannot repay another customer account.'}, status=403)
         customer = get_object_or_404(Customer, phone=data['customer_phone'])
 
         if customer.statement_balance <= 0 and customer.current_balance <= 0:
@@ -798,14 +836,24 @@ class MakeRepaymentView(APIView):
 # ── Statements ────────────────────────────────────────────────────────────────
 
 class StatementListView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request, phone):
+        if not can_access_customer(request, phone):
+            return Response({'error': 'You cannot access another customer statement.'}, status=403)
         customer = get_object_or_404(Customer, phone=phone)
         statements = customer.statements.all()
         return Response(CreditStatementSerializer(statements, many=True).data)
 
 
 class CurrentStatementView(APIView):
+    permission_classes = [IsAuthenticated]
+
     def get(self, request, phone):
+        if not can_access_customer(request, phone):
+            return Response({'error': 'You cannot access another customer statement.'}, status=403)
+        if not (request.user.is_staff or request.user.is_superuser) and request.user.credit_status != 'approved':
+            return Response({'error': 'Qinance Credit is not active for this account.'}, status=404)
         customer = get_object_or_404(Customer, phone=phone)
         stmt = get_open_statement(customer)
         transactions = CreditTransaction.objects.filter(statement=stmt)

@@ -110,6 +110,11 @@ class MerchantLoan(models.Model):
         ('repaid', 'Repaid'),
         ('rejected', 'Rejected'),
     ]
+    REPAYMENT_CHOICES = [
+        ('daily', 'Daily'),
+        ('weekly', 'Weekly'),
+        ('biweekly', 'Biweekly'),
+    ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     merchant = models.ForeignKey(Merchant, on_delete=models.CASCADE, related_name='loans')
@@ -117,6 +122,8 @@ class MerchantLoan(models.Model):
     approved_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
     balance_due = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
     term_months = models.PositiveSmallIntegerField(default=6)
+    repayment_frequency = models.CharField(max_length=12, choices=REPAYMENT_CHOICES, default='weekly')
+    interest_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('20.00'))
     purpose = models.CharField(max_length=250, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     applied_at = models.DateTimeField(auto_now_add=True)
@@ -128,6 +135,26 @@ class MerchantLoan(models.Model):
         if not self.term_months or self.balance_due <= 0:
             return Decimal('0.00')
         return (self.balance_due / self.term_months).quantize(Decimal('0.01'))
+
+    @property
+    def estimated_interest(self):
+        return (self.requested_amount * self.interest_rate / Decimal('100')).quantize(Decimal('0.01'))
+
+    @property
+    def estimated_total_repayment(self):
+        return (self.requested_amount + self.estimated_interest).quantize(Decimal('0.01'))
+
+    @property
+    def estimated_installments(self):
+        if self.repayment_frequency == 'daily':
+            return self.term_months * 30
+        if self.repayment_frequency == 'biweekly':
+            return max(1, round(self.term_months * 26 / 12))
+        return max(1, round(self.term_months * 52 / 12))
+
+    @property
+    def estimated_installment(self):
+        return (self.estimated_total_repayment / self.estimated_installments).quantize(Decimal('0.01'))
 
     def __str__(self):
         return f'{self.merchant.name} loan E{self.requested_amount} ({self.status})'

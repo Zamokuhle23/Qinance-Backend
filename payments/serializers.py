@@ -10,13 +10,17 @@ class MerchantSerializer(serializers.ModelSerializer):
 
 class MerchantLoanSerializer(serializers.ModelSerializer):
     monthly_payment = serializers.ReadOnlyField()
+    estimated_interest = serializers.ReadOnlyField()
+    estimated_total_repayment = serializers.ReadOnlyField()
+    estimated_installments = serializers.ReadOnlyField()
+    estimated_installment = serializers.ReadOnlyField()
 
     class Meta:
         model = MerchantLoan
         fields = '__all__'
         read_only_fields = [
             'merchant', 'approved_amount', 'balance_due', 'status',
-            'approved_at', 'due_date', 'applied_at',
+            'approved_at', 'due_date', 'applied_at', 'interest_rate',
         ]
 
 
@@ -106,6 +110,7 @@ class ConfirmPaymentSerializer(serializers.Serializer):
 
     session_id     = serializers.UUIDField()
     customer_phone = serializers.CharField(max_length=20)
+    pin            = serializers.CharField(min_length=4, max_length=6, write_only=True)
     funding_mode   = serializers.ChoiceField(choices=FUNDING_CHOICES)
     payment_source_account_id = serializers.UUIDField(required=False, allow_null=True)
 

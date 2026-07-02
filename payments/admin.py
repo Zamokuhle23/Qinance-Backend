@@ -30,8 +30,8 @@ class MerchantDocumentAdmin(admin.ModelAdmin):
 
 @admin.register(MerchantLoan)
 class MerchantLoanAdmin(admin.ModelAdmin):
-    list_display = ['merchant', 'requested_amount', 'approved_amount', 'balance_due', 'term_months', 'status', 'applied_at']
-    list_filter = ['status', 'term_months']
+    list_display = ['merchant', 'requested_amount', 'repayment_frequency', 'interest_rate', 'approved_amount', 'balance_due', 'status', 'applied_at']
+    list_filter = ['status', 'repayment_frequency', 'interest_rate']
     search_fields = ['merchant__name', 'merchant__phone']
 
 

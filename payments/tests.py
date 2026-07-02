@@ -39,6 +39,8 @@ class PaymentRoutingTests(APITestCase):
             phone='76000001', email='customer@example.com', password='StrongPass123!',
             full_name='Customer', role='customer', kyc_status='approved', credit_status='approved',
         )
+        self.customer_user.set_pin('1234')
+        self.customer_user.save(update_fields=['pin'])
         self.customer = Customer.objects.create(
             phone=self.customer_user.phone, full_name='Customer', credit_limit=Decimal('1000.00'),
         )
@@ -91,6 +93,7 @@ class PaymentRoutingTests(APITestCase):
         response = self.client.post('/api/sessions/confirm/', {
             'session_id': session_id,
             'customer_phone': self.customer.phone,
+            'pin': '1234',
             'funding_mode': 'wallet',
         }, format='json')
         self.assertEqual(response.status_code, 400)
@@ -112,6 +115,7 @@ class PaymentRoutingTests(APITestCase):
         confirmed = self.client.post('/api/sessions/confirm/', {
             'session_id': created.data['session_id'],
             'customer_phone': self.customer.phone,
+            'pin': '1234',
             'funding_mode': 'wallet',
         }, format='json')
         self.assertEqual(confirmed.status_code, 200, confirmed.data)
@@ -132,6 +136,7 @@ class PaymentRoutingTests(APITestCase):
         response = self.client.post('/api/sessions/confirm/', {
             'session_id': created.data['session_id'],
             'customer_phone': self.customer.phone,
+            'pin': '1234',
             'funding_mode': 'credit',
         }, format='json')
         self.assertEqual(response.status_code, 400)
@@ -150,9 +155,57 @@ class PaymentRoutingTests(APITestCase):
         response = self.client.post('/api/sessions/confirm/', {
             'session_id': created.data['session_id'],
             'customer_phone': self.customer.phone,
+            'pin': '1234',
             'funding_mode': 'wallet',
         }, format='json')
         self.assertEqual(response.status_code, 403)
+
+    def test_payment_rejects_an_incorrect_transaction_pin(self):
+        self.client.force_authenticate(self.merchant_user)
+        created = self.client.post('/api/sessions/create/', {
+            'merchant_id': str(self.merchant.id), 'amount': '10.00',
+        }, format='json')
+        self.client.force_authenticate(self.customer_user)
+        response = self.client.post('/api/sessions/confirm/', {
+            'session_id': created.data['session_id'],
+            'customer_phone': self.customer.phone,
+            'pin': '9999',
+            'funding_mode': 'wallet',
+        }, format='json')
+        self.assertEqual(response.status_code, 403)
+        self.assertIn('Incorrect transaction PIN', response.data['error'])
+
+    def test_customer_cannot_read_another_customer_profile(self):
+        other_user = User.objects.create_user(
+            phone='76000004', email='private@example.com', password='StrongPass123!',
+            full_name='Private Customer', role='customer', kyc_status='approved',
+        )
+        Customer.objects.create(phone=other_user.phone, full_name=other_user.full_name)
+        self.client.force_authenticate(other_user)
+        response = self.client.get(f'/api/customers/{self.customer.phone}/')
+        self.assertEqual(response.status_code, 403)
+
+    def test_wallet_only_customer_does_not_receive_a_credit_card(self):
+        self.customer_user.credit_status = 'pending'
+        self.customer_user.save(update_fields=['credit_status'])
+        self.client.force_authenticate(self.customer_user)
+        response = self.client.get(f'/api/card/{self.customer.phone}/')
+        self.assertEqual(response.status_code, 404)
+
+    def test_customer_static_session_does_not_expire_merchant_session(self):
+        self.client.force_authenticate(self.merchant_user)
+        merchant_session = self.client.post('/api/sessions/create/', {
+            'merchant_id': str(self.merchant.id), 'amount': '10.00',
+        }, format='json')
+        self.client.force_authenticate(self.customer_user)
+        customer_session = self.client.post('/api/sessions/create/', {
+            'merchant_id': str(self.merchant.id), 'amount': '20.00',
+        }, format='json')
+        self.assertEqual(customer_session.status_code, 201)
+        self.assertEqual(
+            self.client.get(f"/api/sessions/{merchant_session.data['session_id']}/").data['status'],
+            'waiting',
+        )
 
     def test_ledger_entries_cannot_be_changed_or_deleted(self):
         entry = post_wallet_entry(get_wallet(self.customer), Decimal('50.00'), 'topup', 'Test', 'immutable:test')
@@ -171,13 +224,18 @@ class PaymentRoutingTests(APITestCase):
         self.client.force_authenticate(self.merchant_user)
         created = self.client.post('/api/merchant/loans/', {
             'requested_amount': '5000.00',
-            'term_months': 6,
+            'repayment_frequency': 'weekly',
             'purpose': 'Buy stock',
         }, format='json')
 
         self.assertEqual(created.status_code, 201, created.data)
         self.assertEqual(created.data['status'], 'pending')
         self.assertEqual(created.data['requested_amount'], '5000.00')
+        self.assertEqual(created.data['interest_rate'], '20.00')
+        self.assertEqual(created.data['estimated_interest'], Decimal('1000.00'))
+        self.assertEqual(created.data['estimated_total_repayment'], Decimal('6000.00'))
+        self.assertEqual(created.data['estimated_installments'], 26)
+        self.assertEqual(created.data['estimated_installment'], Decimal('230.77'))
 
         listed = self.client.get('/api/merchant/loans/')
         self.assertEqual(listed.status_code, 200)
@@ -188,7 +246,7 @@ class PaymentRoutingTests(APITestCase):
         self.client.force_authenticate(self.merchant_user)
         application = {
             'requested_amount': '5000.00',
-            'term_months': 6,
+            'repayment_frequency': 'biweekly',
             'purpose': 'Buy stock',
         }
         self.assertEqual(
