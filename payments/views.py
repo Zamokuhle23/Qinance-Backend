@@ -8,6 +8,8 @@ from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from decimal import Decimal
 from datetime import timedelta
+import hashlib
+import hmac
 from django.db import transaction
 from django.db.models import Max
 
@@ -352,13 +354,14 @@ class ConfirmPaymentView(APIView):
         data = serializer.validated_data
         if request.user.role != 'customer' or request.user.phone != data['customer_phone']:
             return Response({'error': 'Payments can only be authorised by the signed-in customer.'}, status=403)
+        session = get_object_or_404(PaymentSession, pk=data['session_id'])
         auth_method = request.auth.get('auth_method') if request.auth else None
-        if auth_method != 'web_otp':
+        device_authorized = _verify_qr_device_authorization(request.user, session, data)
+        if auth_method != 'web_otp' and not device_authorized:
             if not data.get('pin'):
                 return Response({'error': 'Transaction PIN is required for this session.'}, status=403)
             if not request.user.check_pin(data['pin']):
                 return Response({'error': 'Incorrect transaction PIN.'}, status=403)
-        session = get_object_or_404(PaymentSession, pk=data['session_id'])
 
         if session.status == 'confirmed':
             return Response({'error': 'This payment has already been confirmed.'}, status=400)
@@ -1710,6 +1713,25 @@ def _calculate_trust_score(merchant):
 
 def _hash_token(token):
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _verify_qr_device_authorization(user, session, data):
+    """Verify a short-lived, session-bound signature from the enrolled Android device."""
+    timestamp = data.get('device_authorization_timestamp')
+    signature = data.get('device_authorization_signature')
+    if timestamp is None or not signature:
+        return False
+    if abs(int(timezone.now().timestamp()) - timestamp) > 90:
+        return False
+    try:
+        customer = Customer.objects.get(phone=user.phone)
+        secret = CustomerDeviceSecret.objects.get(customer=customer).secret
+    except (Customer.DoesNotExist, CustomerDeviceSecret.DoesNotExist):
+        return False
+    account_id = data.get('payment_source_account_id') or ''
+    message = f"qr:{session.id}:{timestamp}:{data['funding_mode']}:{account_id}"
+    expected = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature.lower(), expected)
 
 
 def _verify_sound_token(token, secret, customer_sound_id):

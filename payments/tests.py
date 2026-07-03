@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 from decimal import Decimal
 
@@ -7,7 +9,7 @@ from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from users.models import User
-from .models import CardDetails, Customer, LinkedAccount, Merchant, WalletEntry
+from .models import CardDetails, Customer, CustomerDeviceSecret, LinkedAccount, Merchant, WalletEntry
 from .routing import get_wallet, post_wallet_entry
 from .consumers import PaymentSessionConsumer
 
@@ -112,6 +114,51 @@ class PaymentRoutingTests(APITestCase):
         }, format='json')
         self.assertEqual(response.status_code, 403)
         self.assertIn('PIN is required', response.data['error'])
+
+    def test_enrolled_android_device_can_confirm_without_transaction_pin(self):
+        wallet = get_wallet(self.customer)
+        post_wallet_entry(wallet, Decimal('20.00'), 'topup', 'Test funding', 'test:android-device')
+        secret = 'ANDROID-DEVICE-SECRET'
+        CustomerDeviceSecret.objects.create(customer=self.customer, secret=secret)
+        self.client.force_authenticate(self.merchant_user)
+        created = self.client.post('/api/sessions/create/', {
+            'merchant_id': str(self.merchant.id), 'amount': '10.00',
+        }, format='json')
+        session_id = created.data['session_id']
+        timestamp = int(__import__('time').time())
+        message = f'qr:{session_id}:{timestamp}:wallet:'
+        signature = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+
+        self.client.force_authenticate(self.customer_user)
+        confirmed = self.client.post('/api/sessions/confirm/', {
+            'session_id': session_id,
+            'customer_phone': self.customer.phone,
+            'funding_mode': 'wallet',
+            'device_authorization_timestamp': timestamp,
+            'device_authorization_signature': signature,
+        }, format='json')
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+
+    def test_android_device_signature_is_bound_to_funding_source(self):
+        secret = 'ANDROID-DEVICE-SECRET'
+        CustomerDeviceSecret.objects.create(customer=self.customer, secret=secret)
+        self.client.force_authenticate(self.merchant_user)
+        created = self.client.post('/api/sessions/create/', {
+            'merchant_id': str(self.merchant.id), 'amount': '10.00',
+        }, format='json')
+        timestamp = int(__import__('time').time())
+        message = f"qr:{created.data['session_id']}:{timestamp}:wallet:"
+        signature = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+
+        self.client.force_authenticate(self.customer_user)
+        response = self.client.post('/api/sessions/confirm/', {
+            'session_id': created.data['session_id'],
+            'customer_phone': self.customer.phone,
+            'funding_mode': 'credit',
+            'device_authorization_timestamp': timestamp,
+            'device_authorization_signature': signature,
+        }, format='json')
+        self.assertEqual(response.status_code, 403)
 
     def test_default_and_transaction_override_are_separate(self):
         self.client.force_authenticate(self.customer_user)

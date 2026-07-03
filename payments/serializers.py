@@ -113,6 +113,10 @@ class ConfirmPaymentSerializer(serializers.Serializer):
     pin            = serializers.CharField(min_length=4, max_length=6, write_only=True, required=False, allow_blank=True)
     funding_mode   = serializers.ChoiceField(choices=FUNDING_CHOICES)
     payment_source_account_id = serializers.UUIDField(required=False, allow_null=True)
+    device_authorization_timestamp = serializers.IntegerField(required=False)
+    device_authorization_signature = serializers.CharField(
+        min_length=64, max_length=64, required=False, write_only=True,
+    )
 
     bank           = serializers.ChoiceField(choices=BANK_CHOICES, required=False, allow_blank=True)
     jit_bank       = serializers.ChoiceField(choices=BANK_CHOICES, required=False, allow_blank=True)
