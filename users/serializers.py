@@ -150,8 +150,9 @@ def resolve_account(user):
     return 'admin', None
 
 
-def build_auth_payload(user):
+def build_auth_payload(user, auth_method='password'):
     refresh = RefreshToken.for_user(user)
+    refresh['auth_method'] = auth_method
     account_type, profile = resolve_account(user)
     data = {
         'refresh': str(refresh),
@@ -165,6 +166,7 @@ def build_auth_payload(user):
         'credit_status': user.credit_status,
         'phone_verified': user.is_phone_verified,
         'has_pin': bool(user.pin),
+        'auth_method': auth_method,
         'kyc_uploaded': list(user.documents.values_list('document_type', flat=True)),
     }
     if account_type == 'merchant' and profile:

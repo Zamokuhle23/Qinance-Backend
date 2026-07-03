@@ -362,7 +362,7 @@ class WebLoginVerifyView(APIView):
             return Response({'error': 'Your application is still awaiting administrator approval.'}, status=403)
         register_device(request, user)
         create_audit_log(user=user, action='login', request=request)
-        return Response(build_auth_payload(user))
+        return Response(build_auth_payload(user, auth_method='web_otp'))
 
 
 def _mask_email(email):

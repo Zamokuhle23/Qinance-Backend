@@ -352,8 +352,12 @@ class ConfirmPaymentView(APIView):
         data = serializer.validated_data
         if request.user.role != 'customer' or request.user.phone != data['customer_phone']:
             return Response({'error': 'Payments can only be authorised by the signed-in customer.'}, status=403)
-        if not request.user.check_pin(data['pin']):
-            return Response({'error': 'Incorrect transaction PIN.'}, status=403)
+        auth_method = request.auth.get('auth_method') if request.auth else None
+        if auth_method != 'web_otp':
+            if not data.get('pin'):
+                return Response({'error': 'Transaction PIN is required for this session.'}, status=403)
+            if not request.user.check_pin(data['pin']):
+                return Response({'error': 'Incorrect transaction PIN.'}, status=403)
         session = get_object_or_404(PaymentSession, pk=data['session_id'])
 
         if session.status == 'confirmed':

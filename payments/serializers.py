@@ -110,7 +110,7 @@ class ConfirmPaymentSerializer(serializers.Serializer):
 
     session_id     = serializers.UUIDField()
     customer_phone = serializers.CharField(max_length=20)
-    pin            = serializers.CharField(min_length=4, max_length=6, write_only=True)
+    pin            = serializers.CharField(min_length=4, max_length=6, write_only=True, required=False, allow_blank=True)
     funding_mode   = serializers.ChoiceField(choices=FUNDING_CHOICES)
     payment_source_account_id = serializers.UUIDField(required=False, allow_null=True)
 

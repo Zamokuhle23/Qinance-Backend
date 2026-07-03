@@ -78,6 +78,41 @@ class PaymentRoutingTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data['access'])
 
+    def test_web_otp_token_can_confirm_without_transaction_pin(self):
+        wallet = get_wallet(self.customer)
+        post_wallet_entry(wallet, Decimal('20.00'), 'topup', 'Test funding', 'test:web-otp')
+        self.client.force_authenticate(self.merchant_user)
+        created = self.client.post('/api/sessions/create/', {
+            'merchant_id': str(self.merchant.id), 'amount': '10.00',
+        }, format='json')
+
+        refresh = RefreshToken.for_user(self.customer_user)
+        refresh['auth_method'] = 'web_otp'
+        self.client.force_authenticate(user=None)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {refresh.access_token}')
+        confirmed = self.client.post('/api/sessions/confirm/', {
+            'session_id': created.data['session_id'],
+            'customer_phone': self.customer.phone,
+            'funding_mode': 'wallet',
+        }, format='json')
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+
+    def test_password_token_still_requires_transaction_pin(self):
+        self.client.force_authenticate(self.merchant_user)
+        created = self.client.post('/api/sessions/create/', {
+            'merchant_id': str(self.merchant.id), 'amount': '10.00',
+        }, format='json')
+        self.client.force_authenticate(user=None)
+        refresh = RefreshToken.for_user(self.customer_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {refresh.access_token}')
+        response = self.client.post('/api/sessions/confirm/', {
+            'session_id': created.data['session_id'],
+            'customer_phone': self.customer.phone,
+            'funding_mode': 'wallet',
+        }, format='json')
+        self.assertEqual(response.status_code, 403)
+        self.assertIn('PIN is required', response.data['error'])
+
     def test_default_and_transaction_override_are_separate(self):
         self.client.force_authenticate(self.customer_user)
         response = self.client.patch('/api/routing/profile/', {

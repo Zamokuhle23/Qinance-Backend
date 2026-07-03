@@ -7,6 +7,7 @@ import shutil
 import tempfile
 from django.test import override_settings
 from rest_framework.test import APITestCase
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from payments.models import CardDetails, Customer, Merchant
 from users.models import OTPVerification, User
@@ -62,6 +63,8 @@ class ManagedAccountAuthenticationTests(APITestCase):
         }, format='json')
         self.assertEqual(verify.status_code, 200)
         self.assertEqual(verify.data['role'], 'merchant')
+        self.assertEqual(verify.data['auth_method'], 'web_otp')
+        self.assertEqual(RefreshToken(verify.data['refresh'])['auth_method'], 'web_otp')
         otp.refresh_from_db()
         self.assertTrue(otp.is_used)
 
