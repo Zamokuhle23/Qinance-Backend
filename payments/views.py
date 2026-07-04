@@ -1734,6 +1734,32 @@ def _verify_qr_device_authorization(user, session, data):
     return hmac.compare_digest(signature.lower(), expected)
 
 
+def _decode_ble_authorization(token, session):
+    """Return the signed customer and routing selection for a BLE payment session."""
+    try:
+        version, customer_id, timestamp, source_code, session_id, merchant_id, amount, signature = token.split('|')
+        if (version != 'b1' or session_id != session.id.hex
+                or merchant_id != session.merchant_id.hex or amount != str(session.amount)):
+            return None
+        if abs(int(timezone.now().timestamp()) - int(timestamp)) > 90:
+            return None
+        customer = Customer.objects.get(sound_id=int(customer_id))
+        secret = CustomerDeviceSecret.objects.get(customer=customer).secret
+        message = '|'.join((version, customer_id, timestamp, source_code, session_id, merchant_id, amount))
+        expected = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature.lower(), expected):
+            return None
+        if source_code == 'w':
+            return customer, 'wallet', None
+        if source_code == 'c':
+            return customer, 'credit', None
+        if source_code.startswith('l-') and len(source_code) == 10:
+            return customer, 'linked', source_code[2:]
+    except (ValueError, Customer.DoesNotExist, CustomerDeviceSecret.DoesNotExist):
+        return None
+    return None
+
+
 def _verify_sound_token(token, secret, customer_sound_id):
     """Verify legacy cid:ts:hmac8 or routed cid:ts:source:hmac8 tokens."""
     try:
@@ -1957,6 +1983,105 @@ class ProcessSoundPaymentView(APIView):
             'amount':        str(amount),
             'merchant':      merchant.name,
             'settles_at':    settlement.settle_after.isoformat(),
+        })
+
+
+class ProcessBlePaymentView(APIView):
+    """Process a customer authorization delivered locally over Android BLE."""
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request):
+        token = request.data.get('token', '')
+        session_id = request.data.get('session_id')
+        if not token or not session_id:
+            return Response({'error': 'token and session_id required'}, status=400)
+        session = get_object_or_404(
+            PaymentSession.objects.select_for_update().select_related('merchant'), pk=session_id,
+        )
+        if request.user.role != 'merchant' or request.user.phone != session.merchant.phone:
+            return Response({'error': 'This terminal is not authorised for that merchant.'}, status=403)
+        if session.status == 'confirmed':
+            return Response({
+                'status': 'confirmed', 'session_id': str(session.id),
+                'amount': str(session.amount), 'funding_mode': session.payment_source,
+            })
+        if session.status != 'waiting':
+            return Response({'error': 'This BLE payment request is no longer active.'}, status=400)
+        authorization = _decode_ble_authorization(token, session)
+        if not authorization:
+            return Response({'error': 'Invalid or expired BLE payment authorization.'}, status=400)
+        customer, source, routing_key = authorization
+        try:
+            payment_source, payment_source_account = resolve_customer_source(
+                customer, source, routing_key=routing_key, amount=session.amount,
+            )
+            destination, destination_account = resolve_merchant_destination(
+                session.merchant, session.settlement_destination or None, session.settlement_account_id,
+            )
+        except RoutingError as error:
+            return Response({'error': str(error)}, status=400)
+        compliance = run_payment_compliance(customer, session.amount, payment_source, session)
+        if not compliance.allowed:
+            return Response({'error': compliance.reason}, status=400)
+
+        statement = None
+        if payment_source == 'credit':
+            locked_customer = Customer.objects.select_for_update().get(pk=customer.pk)
+            if not credit_is_available(locked_customer, session.amount):
+                return Response({'error': 'Qinance Credit is not available for this payment.'}, status=400)
+            locked_customer.current_balance += session.amount
+            locked_customer.save(update_fields=['current_balance'])
+            statement = get_open_statement(locked_customer)
+            statement.total_purchases += session.amount
+            statement.closing_balance = locked_customer.current_balance
+            statement.save()
+
+        try:
+            apply_payment_routes(
+                customer, session.merchant, session.amount, payment_source, destination,
+                str(session.id), destination_account,
+            )
+        except RoutingError as error:
+            transaction.set_rollback(True)
+            return Response({'error': str(error)}, status=400)
+
+        CreditTransaction.objects.create(
+            customer=customer,
+            merchant=session.merchant,
+            transaction_type='purchase',
+            funding_mode='credit' if payment_source == 'credit' else 'bank',
+            amount=session.amount,
+            session=session,
+            statement=statement,
+            description=f'BLE nearby payment at {session.merchant.name}',
+            reference=str(session.id),
+        )
+        session.customer = customer
+        session.funding_mode = payment_source
+        session.payment_source = payment_source
+        session.payment_source_account = payment_source_account
+        session.settlement_destination = destination
+        session.settlement_account = destination_account
+        session.status = 'confirmed'
+        session.confirmed_at = timezone.now()
+        session.save()
+        save_compliance_flags(customer, compliance)
+        if compliance.requires_ctr or compliance.requires_str:
+            create_regulatory_report(
+                customer, session.amount, session,
+                'ctr' if compliance.requires_ctr else 'str', compliance.flags,
+            )
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(f'session_{session.id}', {
+            'type': 'payment_confirmed', 'session_id': str(session.id),
+            'amount': str(session.amount), 'funding_mode': payment_source,
+            'bank_used': '', 'customer_phone': customer.phone,
+        })
+        return Response({
+            'status': 'confirmed', 'session_id': str(session.id),
+            'amount': str(session.amount), 'funding_mode': payment_source,
+            'merchant': session.merchant.name,
         })
 
 

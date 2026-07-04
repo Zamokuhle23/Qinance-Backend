@@ -71,4 +71,7 @@ urlpatterns = [
     path('sound/status/<uuid:settlement_id>/', views.SoundPaymentStatusView.as_view()),
     path('sound/settlements/', views.SoundSettlementListView.as_view()),
     path('sound/merchant-trust/<uuid:merchant_id>/', views.MerchantTrustView.as_view()),
+
+    # Android-only Nearby Bluetooth payment rail
+    path('ble/process/', views.ProcessBlePaymentView.as_view()),
 ]

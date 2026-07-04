@@ -160,6 +160,50 @@ class PaymentRoutingTests(APITestCase):
         }, format='json')
         self.assertEqual(response.status_code, 403)
 
+    def test_merchant_can_process_session_bound_ble_authorization(self):
+        wallet = get_wallet(self.customer)
+        post_wallet_entry(wallet, Decimal('40.00'), 'topup', 'BLE funding', 'test:ble-funding')
+        self.customer.sound_id = 17
+        self.customer.save(update_fields=['sound_id'])
+        secret = 'BLE-DEVICE-SECRET'
+        CustomerDeviceSecret.objects.create(customer=self.customer, secret=secret)
+        self.client.force_authenticate(self.merchant_user)
+        created = self.client.post('/api/sessions/create/', {
+            'merchant_id': str(self.merchant.id), 'amount': '12.50',
+        }, format='json')
+        session_id = created.data['session_id']
+        timestamp = str(int(__import__('time').time()))
+        message = f"b1|17|{timestamp}|w|{session_id.replace('-', '')}|{self.merchant.id.hex}|12.50"
+        token = f'{message}|{hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()}'
+        confirmed = self.client.post('/api/ble/process/', {
+            'session_id': session_id, 'token': token,
+        }, format='json')
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+        self.assertEqual(confirmed.data['funding_mode'], 'wallet')
+        wallet.refresh_from_db()
+        self.assertEqual(wallet.balance, Decimal('27.50'))
+
+    def test_ble_authorization_cannot_be_reused_for_another_session(self):
+        self.customer.sound_id = 18
+        self.customer.save(update_fields=['sound_id'])
+        secret = 'BLE-DEVICE-SECRET'
+        CustomerDeviceSecret.objects.create(customer=self.customer, secret=secret)
+        self.client.force_authenticate(self.merchant_user)
+        first = self.client.post('/api/sessions/create/', {
+            'merchant_id': str(self.merchant.id), 'amount': '10.00',
+        }, format='json')
+        second = self.client.post('/api/sessions/create/', {
+            'merchant_id': str(self.merchant.id), 'amount': '20.00',
+        }, format='json')
+        timestamp = str(int(__import__('time').time()))
+        message = f"b1|18|{timestamp}|w|{first.data['session_id'].replace('-', '')}|{self.merchant.id.hex}|10.00"
+        token = f'{message}|{hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()}'
+        rejected = self.client.post('/api/ble/process/', {
+            'session_id': second.data['session_id'], 'token': token,
+        }, format='json')
+        self.assertEqual(rejected.status_code, 400)
+        self.assertIn('Invalid or expired', rejected.data['error'])
+
     def test_default_and_transaction_override_are_separate(self):
         self.client.force_authenticate(self.customer_user)
         response = self.client.patch('/api/routing/profile/', {
