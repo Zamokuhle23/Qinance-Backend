@@ -27,7 +27,6 @@ class AIService:
         if cls._provider is None:
             provider_config = AIConfig.get_provider_config()
             cls._provider = GeminiProvider(
-                api_key=provider_config['api_key'],
                 model=provider_config['model'],
             )
         return cls._provider
