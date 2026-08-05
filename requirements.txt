@@ -37,3 +37,6 @@ firebase-admin==6.5.0
 
 # TOTP / HOTP (used for device secret generation in sound payment)
 pyotp==2.9.0
+
+# Vertex AI SDK
+google-genai
