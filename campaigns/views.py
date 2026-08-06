@@ -251,6 +251,65 @@ class AIRecentRequestsView(APIView):
         } for log in logs])
 
 
+class NearbyOffersView(APIView):
+    """
+    Pillar 2 — Nearby Offers.
+    Returns active campaigns with merchant distance, cashback/discount, and a
+    Google Maps directions link. Sorting by distance, cashback, discount, category, expiry.
+    """
+
+    def get(self, request):
+        from django.utils import timezone
+        today = timezone.localdate()
+        category = request.query_params.get('category')
+        sort = request.query_params.get('sort', 'distance')
+
+        qs = Campaign.objects.filter(
+            status='active',
+            start_date__lte=today,
+            end_date__gte=today,
+        ).select_related('merchant')
+
+        if category:
+            qs = qs.filter(category__icontains=category)
+
+        offers = []
+        for c in qs:
+            merchant = c.merchant
+            # Distance is a placeholder — merchant.location is a text address.
+            # In production, geocode merchant.location and compute haversine.
+            distance_m = 0
+            maps_url = f'https://www.google.com/maps/dir/?api=1&destination={merchant.location.replace(" ", "+")}' if merchant.location else None
+
+            offers.append({
+                'campaign_id': str(c.id),
+                'merchant_id': str(merchant.id),
+                'merchant_name': merchant.name,
+                'merchant_location': merchant.location,
+                'category': c.category,
+                'deal_type': c.deal_type,
+                'discount_percent': str(c.discount_percent) if c.discount_percent else None,
+                'cashback_percent': str(c.cashback_percent) if c.cashback_percent else None,
+                'distance_m': distance_m,
+                'expires_on': c.end_date.isoformat(),
+                'maps_url': maps_url,
+            })
+
+        # Sorting
+        if sort == 'cashback':
+            offers.sort(key=lambda o: float(o['cashback_percent'] or 0), reverse=True)
+        elif sort == 'discount':
+            offers.sort(key=lambda o: float(o['discount_percent'] or 0), reverse=True)
+        elif sort == 'expiry':
+            offers.sort(key=lambda o: o['expires_on'])
+        elif sort == 'category':
+            offers.sort(key=lambda o: o['category'])
+        else:  # distance
+            offers.sort(key=lambda o: o['distance_m'])
+
+        return Response(offers)
+
+
 class SavedDealView(APIView):
     """Customer saves a deal."""
     def post(self, request):

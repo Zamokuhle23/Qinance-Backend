@@ -31,7 +31,11 @@ def _extract_intent(message):
     msg = (message or '').lower()
     if any(w in msg for w in ['find', 'search', 'cheapest', 'nearby', 'deals', 'deal', 'buy', 'shop', 'special', 'promotion', 'discount', 'cashback', 'restaurant', 'barber', 'pharmacy', 'supermarket', 'pizza', 'grocer']):
         return 'shopping'
-    if any(w in msg for w in ['campaign', 'advertise', 'marketing', 'what campaign', 'run this weekend', 'promote']):
+    if any(w in msg for w in ['loan', 'borrow', 'credit', 'working capital', 'finance']):
+        return 'loan_recommendation'
+    if any(w in msg for w in ['briefing', 'today summary', 'daily summary', 'today\'s summary', 'assistant']):
+        return 'daily_briefing'
+    if any(w in msg for w in ['campaign', 'advertise', 'marketing', 'what campaign', 'run this weekend', 'promote', 'promotion']):
         return 'campaign_advice'
     if any(w in msg for w in ['revenue', 'sales', 'performance', 'grow', 'growth']):
         return 'performance'
@@ -69,8 +73,24 @@ class AIOrchestrator:
             elif 'nearby_merchants' in available_names:
                 tool_name = 'nearby_merchants'
                 args = {'location': context.get('location', '')}
+        elif intent == 'loan_recommendation':
+            if merchant_id and 'ai_loan_recommendation' in available_names:
+                tool_name = 'ai_loan_recommendation'
+                args = {
+                    'merchant_id': merchant_id,
+                    'risk_score': context.get('risk_score', 'low'),
+                    'loan_range_lower': context.get('loan_range_lower', 0),
+                    'loan_range_upper': context.get('loan_range_upper', 0),
+                }
+        elif intent == 'daily_briefing':
+            if merchant_id and 'daily_briefing' in available_names:
+                tool_name = 'daily_briefing'
+                args = {'merchant_id': merchant_id}
         elif intent == 'campaign_advice':
-            if merchant_id and 'recommend_campaign' in available_names:
+            if merchant_id and 'promotion_recommendation' in available_names:
+                tool_name = 'promotion_recommendation'
+                args = {'merchant_id': merchant_id}
+            elif merchant_id and 'recommend_campaign' in available_names:
                 tool_name = 'recommend_campaign'
                 args = {'merchant_id': merchant_id}
             elif 'campaign_summary' in available_names:

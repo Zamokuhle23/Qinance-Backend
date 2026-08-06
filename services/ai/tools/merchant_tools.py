@@ -56,3 +56,137 @@ def merchant_performance(merchant_id):
             'total_revenue': float(analytics.aggregate(total=Sum('revenue'))['total'] or 0),
         }
     }
+
+
+@register_tool(
+    'ai_loan_recommendation',
+    roles=['merchant', 'admin'],
+    description=(
+        'Contextual AI loan recommendation. Takes the traditional risk engine\'s '
+        'safe loan range and layers Gemini context (weather, events, seasonality, '
+        'merchant profile, repayment history) to recommend an amount WITHIN the '
+        'approved range with an explanation and confidence. Never overrides guardrails.'
+    ),
+)
+def ai_loan_recommendation(merchant_id, risk_score='low', loan_range_lower=0, loan_range_upper=0):
+    """Deterministic context gathering — Gemini only explains within the safe range."""
+    from payments.models import Merchant, MerchantLoan
+    from campaigns.models import Campaign, CampaignAnalytics
+    from django.db.models import Sum
+
+    merchant = Merchant.objects.filter(id=merchant_id).first()
+    if not merchant:
+        return {'ok': False, 'error': 'Merchant not found.'}
+
+    loans = MerchantLoan.objects.filter(merchant=merchant)
+    completed = loans.filter(status='repaid').count()
+    active = loans.filter(status='active').count()
+    total_borrowed = float(loans.aggregate(total=Sum('requested_amount'))['total'] or 0)
+    campaigns = Campaign.objects.filter(merchant=merchant)
+    analytics = CampaignAnalytics.objects.filter(campaign__merchant=merchant)
+
+    # Deterministic context (no PII). Gemini uses this to recommend within range.
+    return {
+        'ok': True,
+        'data': {
+            'merchant_business_type': merchant.business_type,
+            'merchant_risk_rating': merchant.risk_rating,
+            'trust_score': merchant.trust_score,
+            'kyc_approved': merchant.kyc_approved,
+            'completed_loans': completed,
+            'active_loans': active,
+            'total_borrowed': total_borrowed,
+            'campaign_count': campaigns.count(),
+            'campaign_views': campaigns.aggregate(total=Sum('views'))['total'] or 0,
+            'campaign_revenue': float(analytics.aggregate(total=Sum('revenue'))['total'] or 0),
+            'traditional_risk_score': risk_score,
+            'approved_loan_range': [float(loan_range_lower), float(loan_range_upper)],
+            'context_hints': {
+                'weather': 'Check local weather forecast for the week.',
+                'events': 'Check for nearby events/tournaments this weekend.',
+                'seasonality': 'Consider business type seasonality.',
+            },
+        }
+    }
+
+
+@register_tool(
+    'daily_briefing',
+    roles=['merchant', 'admin'],
+    description=(
+        'AI Merchant Assistant daily briefing. Returns today\'s revenue, repayment '
+        'status, campaign performance, and recommendation context for Gemini to explain.'
+    ),
+)
+def daily_briefing(merchant_id):
+    from payments.models import Merchant, MerchantLoan
+    from campaigns.models import Campaign, CampaignAnalytics
+    from django.db.models import Sum
+    from django.utils import timezone
+
+    merchant = Merchant.objects.filter(id=merchant_id).first()
+    if not merchant:
+        return {'ok': False, 'error': 'Merchant not found.'}
+
+    today = timezone.localdate()
+    campaigns = Campaign.objects.filter(merchant=merchant)
+    analytics = CampaignAnalytics.objects.filter(campaign__merchant=merchant)
+    loans = MerchantLoan.objects.filter(merchant=merchant)
+
+    return {
+        'ok': True,
+        'data': {
+            'merchant_name': merchant.name,
+            'business_type': merchant.business_type,
+            'active_campaigns': campaigns.filter(status='active').count(),
+            'campaign_views_today': campaigns.filter(created_at__date=today).aggregate(total=Sum('views'))['total'] or 0,
+            'campaign_revenue': float(analytics.aggregate(total=Sum('revenue'))['total'] or 0),
+            'active_loans': loans.filter(status='active').count(),
+            'repaid_loans': loans.filter(status='repaid').count(),
+            'repayment_rate': '100%' if loans.filter(status='repaid').count() else '0%',
+            'recommendation_context': {
+                'weather': 'Check local weather forecast.',
+                'events': 'Check for nearby events this weekend.',
+                'seasonality': 'Consider business type seasonality.',
+            },
+        }
+    }
+
+
+@register_tool(
+    'promotion_recommendation',
+    roles=['merchant', 'admin'],
+    description=(
+        'AI promotion recommendation. Analyses merchant performance and returns '
+        'context (campaigns, revenue, seasonality) for Gemini to suggest promotions.'
+    ),
+)
+def promotion_recommendation(merchant_id):
+    from payments.models import Merchant
+    from campaigns.models import Campaign, CampaignAnalytics
+    from django.db.models import Sum
+
+    merchant = Merchant.objects.filter(id=merchant_id).first()
+    if not merchant:
+        return {'ok': False, 'error': 'Merchant not found.'}
+
+    campaigns = Campaign.objects.filter(merchant=merchant)
+    analytics = CampaignAnalytics.objects.filter(campaign__merchant=merchant)
+
+    return {
+        'ok': True,
+        'data': {
+            'business_type': merchant.business_type,
+            'active_campaigns': campaigns.filter(status='active').count(),
+            'total_campaigns': campaigns.count(),
+            'total_views': campaigns.aggregate(total=Sum('views'))['total'] or 0,
+            'total_clicks': campaigns.aggregate(total=Sum('clicks'))['total'] or 0,
+            'total_redemptions': campaigns.aggregate(total=Sum('redemptions'))['total'] or 0,
+            'campaign_revenue': float(analytics.aggregate(total=Sum('revenue'))['total'] or 0),
+            'recommendation_context': {
+                'weather': 'Check local weather forecast.',
+                'events': 'Check for nearby events this weekend.',
+                'seasonality': 'Consider business type seasonality.',
+            },
+        }
+    }

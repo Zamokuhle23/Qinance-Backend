@@ -110,6 +110,72 @@ def get_or_create_card(customer):
     return card
 
 
+def apply_cashback(customer, merchant, amount, session):
+    """
+    After a successful payment, check for an active cashback campaign and
+    credit the customer's wallet automatically. Decrements campaign budget
+    and increments redemptions. Returns the cashback amount (0 if none).
+    """
+    from decimal import Decimal as _D
+    from campaigns.models import Campaign
+    from django.utils import timezone as _tz
+
+    today = _tz.localdate()
+    campaign = (
+        Campaign.objects
+        .filter(
+            merchant=merchant,
+            status='active',
+            deal_type='cashback',
+            start_date__lte=today,
+            end_date__gte=today,
+        )
+        .order_by('-created_at')
+        .first()
+    )
+    if not campaign:
+        return _D('0.00')
+
+    # Remaining budget check
+    if campaign.budget <= 0:
+        return _D('0.00')
+
+    # Max redemptions check
+    if campaign.max_redemptions and campaign.redemptions >= campaign.max_redemptions:
+        return _D('0.00')
+
+    # Calculate cashback
+    cashback = _D('0.00')
+    if campaign.cashback_percent:
+        cashback = (amount * campaign.cashback_percent / _D('100')).quantize(_D('0.01'))
+    if cashback <= 0:
+        return _D('0.00')
+
+    # Cap cashback at remaining budget
+    cashback = min(cashback, campaign.budget)
+
+    # Credit customer wallet
+    try:
+        wallet = get_wallet(customer)
+        post_wallet_entry(
+            wallet,
+            cashback,
+            'receipt',
+            f'Cashback from {merchant.name}',
+            f'cashback-{session.id}',
+            metadata={'campaign_id': str(campaign.id), 'session_id': str(session.id)},
+        )
+    except Exception:
+        return _D('0.00')
+
+    # Decrement budget, increment redemptions
+    campaign.budget -= cashback
+    campaign.redemptions += 1
+    campaign.save(update_fields=['budget', 'redemptions'])
+
+    return cashback
+
+
 def get_open_statement(customer):
     today = timezone.now().date()
     stmt = CreditStatement.objects.filter(
@@ -558,6 +624,9 @@ class ConfirmPaymentView(APIView):
             transaction.set_rollback(True)
             return Response({'error': str(error)}, status=400)
 
+        # ── Auto-credit cashback from active campaign (Pillar 1) ─────────
+        cashback_amount = apply_cashback(customer, session.merchant, amount, session)
+
         # ── Persist compliance flags and regulatory reports ──────────────
         save_compliance_flags(customer, compliance)
         if compliance.requires_ctr or compliance.requires_str:
@@ -594,6 +663,7 @@ class ConfirmPaymentView(APIView):
             'session_id': str(session.id),
             'amount': str(session.amount),
             'funding_mode': funding_mode,
+            'cashback': str(cashback_amount),
             'message': 'Payment confirmed successfully.',
         })
 

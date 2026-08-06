@@ -12,4 +12,5 @@ urlpatterns = [
     path('ai/recent/', views.AIRecentRequestsView.as_view()),
     path('deals/save/', views.SavedDealView.as_view()),
     path('merchants/favourite/', views.FavouriteMerchantView.as_view()),
+    path('offers/nearby/', views.NearbyOffersView.as_view()),
 ]
