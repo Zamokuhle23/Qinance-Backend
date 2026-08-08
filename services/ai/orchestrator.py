@@ -143,6 +143,7 @@ class AIOrchestrator:
             'reply': reply,
             'intent': intent,
             'tool_used': tool_name,
+            'tool_data': tool_result.get('data') if tool_result else None,
             'tokens': result.get('tokens', 0),
             'latency_ms': result.get('latency_ms', 0),
         }
