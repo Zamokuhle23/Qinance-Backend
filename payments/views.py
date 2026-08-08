@@ -1990,10 +1990,10 @@ def _decode_ble_authorization(token, session):
 
 
 def _verify_sound_token(token, secret, customer_sound_id):
-    """Verify legacy cid:ts:hmac8 or routed cid:ts:source:hmac8 tokens."""
+    """Verify legacy cid:ts:hmac8, routed cid:ts:source:hmac8, or deal cid:ts:source:deal_id:hmac8 tokens."""
     try:
         parts = token.split(':')
-        if len(parts) not in (3, 4):
+        if len(parts) not in (3, 4, 5):
             return False
         token_cid, token_hmac = parts[0], parts[-1]
         if int(token_cid) != int(customer_sound_id):
@@ -2008,7 +2008,7 @@ def _verify_sound_token(token, secret, customer_sound_id):
 def _verify_token_timestamp(token):
     try:
         parts = token.split(':')
-        if len(parts) not in (3, 4):
+        if len(parts) not in (3, 4, 5):
             return False
         timestamp_window = int(parts[1])
         current_window   = int(timezone.now().timestamp() / 30)
@@ -2020,14 +2020,17 @@ def _verify_token_timestamp(token):
 def _sound_source(token):
     parts = token.split(':')
     if len(parts) == 3:
-        return None, None
+        return None, None, None
     code = parts[2]
+    campaign_id = None
+    if len(parts) == 5:
+        campaign_id = parts[3]
     if code == 'w':
-        return 'wallet', None
+        return 'wallet', None, campaign_id
     if code == 'c':
-        return 'credit', None
+        return 'credit', None, campaign_id
     if code.startswith('l-') and len(code) == 10:
-        return 'linked', code[2:]
+        return 'linked', code[2:], campaign_id
     raise RoutingError('Invalid payment source in contactless token.')
 
 
@@ -2139,7 +2142,19 @@ class ProcessSoundPaymentView(APIView):
         if not _verify_token_timestamp(token):
             return Response({'error': 'Token expired — ask customer to regenerate'}, status=400)
         try:
-            token_source, routing_key = _sound_source(token)
+            token_source, routing_key, campaign_id = _sound_source(token)
+            
+            # Apply campaign discount if present
+            applied_discount = Decimal('0.00')
+            if campaign_id:
+                from campaigns.models import Campaign
+                campaign = Campaign.objects.filter(id=campaign_id, merchant=merchant, status='active').first()
+                if campaign and campaign.discount_percent:
+                    applied_discount = (amount * campaign.discount_percent / Decimal('100')).quantize(Decimal('0.01'))
+                    amount -= applied_discount
+                    campaign.redemptions += 1
+                    campaign.save(update_fields=['redemptions'])
+            
             payment_source, payment_source_account = resolve_customer_source(
                 customer, token_source, routing_key=routing_key, amount=amount,
             )
@@ -2207,7 +2222,7 @@ class ProcessSoundPaymentView(APIView):
         _schedule_settlement(settlement.id)
         return Response({
             'status':        'confirmed',
-            'message':       'Payment confirmed. Funds settle in 30 seconds.',
+            'message':       f'Payment confirmed. Funds settle in 30 seconds. (Discount applied: E{applied_discount})',
             'settlement_id': str(settlement.id),
             'amount':        str(amount),
             'merchant':      merchant.name,
