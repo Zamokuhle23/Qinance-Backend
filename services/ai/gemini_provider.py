@@ -99,3 +99,17 @@ class GeminiProvider:
                 'success': False,
                 'error': f'Failed to parse AI response as JSON: {e}',
             }
+
+    def embed(self, text):
+        """Generate a semantic vector embedding using Gemini (768 dims)."""
+        try:
+            response = self.client.models.embed_content(
+                model="text-embedding-004",
+                contents=text
+            )
+            # Response contains a list of embeddings.
+            embedding = response.embeddings[0].values
+            return {'success': True, 'embedding': embedding}
+        except Exception as e:
+            logger.error('Gemini Embedding error: %s', e)
+            return {'success': False, 'error': str(e)}

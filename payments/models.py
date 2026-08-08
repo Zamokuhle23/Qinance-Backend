@@ -8,6 +8,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
+from pgvector.django import VectorField
 
 
 # ── Card helpers ──────────────────────────────────────────────────────────────
@@ -48,6 +49,7 @@ class Merchant(models.Model):
     phone             = models.CharField(max_length=20, unique=True)
     location          = models.CharField(max_length=200, blank=True)
     is_active         = models.BooleanField(default=False)
+    embedding         = VectorField(dimensions=768, blank=True, null=True)
     risk_rating       = models.CharField(max_length=10, choices=RISK_RATINGS, default='low')
     kyc_approved      = models.BooleanField(default=False)
     created_at        = models.DateTimeField(auto_now_add=True)

@@ -77,6 +77,24 @@ class AIService:
         )
         return result
 
+    def embed(self, text, feature='embedding', user_role=None):
+        start = time.time()
+        result = self.provider.embed(text)
+        latency_ms = int((time.time() - start) * 1000)
+        self._log_request(
+            feature=feature,
+            user_role=user_role,
+            tokens=0,
+            latency_ms=latency_ms,
+            success=result.get('success', False),
+            error=result.get('error'),
+            cache_hit=False,
+            tool_used='embedding',
+            intent='embedding',
+            response_time=latency_ms,
+        )
+        return result
+
     def _log_request(self, feature, user_role, tokens, latency_ms, success, error=None, cache_hit=False, tool_used='', intent='', response_time=0):
         if not AIConfig.AI_LOGGING_ENABLED:
             return

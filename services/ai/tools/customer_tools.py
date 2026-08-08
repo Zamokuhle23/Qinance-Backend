@@ -19,7 +19,16 @@ def search_merchants(query='', category='', limit=10):
 
     qs = Merchant.objects.filter(is_active=True, kyc_approved=True)
     if query:
-        qs = qs.filter(Q(name__icontains=query) | Q(business_type__icontains=query) | Q(location__icontains=query))
+        from services.ai.ai_service import AIService
+        from pgvector.django import L2Distance
+        ai = AIService()
+        res = ai.embed(query)
+        if res['success']:
+            # Semantic search using pgvector!
+            qs = qs.order_by(L2Distance('embedding', res['embedding']))
+        else:
+            # Fallback to keyword matching
+            qs = qs.filter(Q(name__icontains=query) | Q(business_type__icontains=query) | Q(location__icontains=query))
     if category:
         qs = qs.filter(business_type__icontains=category)
 
