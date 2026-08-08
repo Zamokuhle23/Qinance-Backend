@@ -1,8 +1,9 @@
-echo "venv/
+venv/
 __pycache__/
 *.pyc
 .env
 staticfiles/
 node_modules/
 dist/
-.env.local" > .gitignore
+.env.local
+db.sqlite3
