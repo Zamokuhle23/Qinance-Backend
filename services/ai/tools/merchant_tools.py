@@ -202,6 +202,25 @@ def confirm_campaign_creation(merchant_id, title, description, deal_type='discou
 
 
 @register_tool(
+    'set_merchant_location',
+    roles=['merchant', 'admin'],
+    description='Update the merchant business location using precise coordinates.',
+)
+def set_merchant_location(merchant_id, lat, lon):
+    from payments.models import Merchant
+    
+    m = Merchant.objects.filter(id=merchant_id).first()
+    if not m:
+        return {'ok': False, 'error': 'Merchant not found.'}
+    
+    m.latitude = float(lat)
+    m.longitude = float(lon)
+    m.save()
+    
+    return {'ok': True, 'data': {'status': 'Location updated successfully', 'lat': lat, 'lon': lon}}
+
+
+@register_tool(
     'daily_briefing',
     roles=['merchant', 'admin'],
     description=(

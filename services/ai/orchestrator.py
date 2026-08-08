@@ -113,15 +113,27 @@ class AIOrchestrator:
                     'deal_type': dtype
                 }
             elif 'confirm' in msg_lower and 'confirm_campaign_creation' in available_names:
-                # This handles the "Yes, create it" response
-                # We expect the plan details to be in the context or session (simplified here)
+                # Check for manual location pinning: "... at location -26.49,31.36"
+                import re
+                loc_match = re.search(r'location ([\d\.-]+),([\d\.-]+)', message)
+                if loc_match and 'set_merchant_location' in available_names:
+                    lat, lon = loc_match.groups()
+                    # Silently update merchant's permanent location first
+                    registry.execute_tool('set_merchant_location', role, {'merchant_id': merchant_id, 'lat': lat, 'lon': lon})
+                
+                # Now proceed with campaign creation
                 tool_name = 'confirm_campaign_creation'
+                # Extract parameters from the confirmation message or context
+                val_match = re.search(r'(\d+)%', message)
+                val = float(val_match.group(1)) if val_match else context.get('pending_value', 10.0)
+                dtype = 'cashback' if 'cashback' in msg_lower else 'discount'
+                
                 args = {
                     'merchant_id': merchant_id,
                     'title': context.get('pending_title', 'New Campaign'),
                     'description': context.get('pending_description', 'Created via Ask Qinance'),
-                    'value': context.get('pending_value', 10.0),
-                    'deal_type': context.get('pending_type', 'discount')
+                    'value': val,
+                    'deal_type': dtype
                 }
             elif merchant_id and 'promotion_recommendation' in available_names:
                 tool_name = 'promotion_recommendation'
