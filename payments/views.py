@@ -1966,7 +1966,15 @@ def _verify_qr_device_authorization(user, session, data):
 def _decode_ble_authorization(token, session):
     """Return the signed customer and routing selection for a BLE payment session."""
     try:
-        version, customer_id, timestamp, source_code, session_id, merchant_id, amount, signature = token.split('|')
+        parts = token.split('|')
+        if len(parts) == 8:
+            version, customer_id, timestamp, source_code, session_id, merchant_id, amount, signature = parts
+            campaign_id = None
+        elif len(parts) == 9:
+            version, customer_id, timestamp, source_code, session_id, merchant_id, amount, campaign_id, signature = parts
+        else:
+            return None
+
         if (version != 'b1' or session_id != session.id.hex
                 or merchant_id != session.merchant_id.hex or amount != str(session.amount)):
             return None
@@ -1974,16 +1982,21 @@ def _decode_ble_authorization(token, session):
             return None
         customer = Customer.objects.get(sound_id=int(customer_id))
         secret = CustomerDeviceSecret.objects.get(customer=customer).secret
-        message = '|'.join((version, customer_id, timestamp, source_code, session_id, merchant_id, amount))
+        
+        if len(parts) == 8:
+            message = '|'.join((version, customer_id, timestamp, source_code, session_id, merchant_id, amount))
+        else:
+            message = '|'.join((version, customer_id, timestamp, source_code, session_id, merchant_id, amount, campaign_id))
+
         expected = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(signature.lower(), expected):
             return None
         if source_code == 'w':
-            return customer, 'wallet', None
+            return customer, 'wallet', None, campaign_id
         if source_code == 'c':
-            return customer, 'credit', None
+            return customer, 'credit', None, campaign_id
         if source_code.startswith('l-') and len(source_code) == 10:
-            return customer, 'linked', source_code[2:]
+            return customer, 'linked', source_code[2:], campaign_id
     except (ValueError, Customer.DoesNotExist, CustomerDeviceSecret.DoesNotExist):
         return None
     return None
@@ -2255,35 +2268,51 @@ class ProcessBlePaymentView(APIView):
         authorization = _decode_ble_authorization(token, session)
         if not authorization:
             return Response({'error': 'Invalid or expired BLE payment authorization.'}, status=400)
-        customer, source, routing_key = authorization
+        customer, source, routing_key, campaign_id = authorization
+        
+        # Apply campaign discount if present
+        amount = session.amount
+        applied_discount = Decimal('0.00')
+        if campaign_id:
+            from campaigns.models import Campaign
+            campaign = Campaign.objects.filter(id=campaign_id, merchant=session.merchant, status='active').first()
+            if campaign and campaign.discount_percent:
+                applied_discount = (amount * campaign.discount_percent / Decimal('100')).quantize(Decimal('0.01'))
+                amount -= applied_discount
+                campaign.redemptions += 1
+                campaign.save(update_fields=['redemptions'])
+                # Track usage on session
+                session.metadata['applied_campaign_id'] = str(campaign.id)
+                session.metadata['discount_applied'] = str(applied_discount)
+        
         try:
             payment_source, payment_source_account = resolve_customer_source(
-                customer, source, routing_key=routing_key, amount=session.amount,
+                customer, source, routing_key=routing_key, amount=amount,
             )
             destination, destination_account = resolve_merchant_destination(
                 session.merchant, session.settlement_destination or None, session.settlement_account_id,
             )
         except RoutingError as error:
             return Response({'error': str(error)}, status=400)
-        compliance = run_payment_compliance(customer, session.amount, payment_source, session)
+        compliance = run_payment_compliance(customer, amount, payment_source, session)
         if not compliance.allowed:
             return Response({'error': compliance.reason}, status=400)
 
         statement = None
         if payment_source == 'credit':
             locked_customer = Customer.objects.select_for_update().get(pk=customer.pk)
-            if not credit_is_available(locked_customer, session.amount):
+            if not credit_is_available(locked_customer, amount):
                 return Response({'error': 'Qinance Credit is not available for this payment.'}, status=400)
-            locked_customer.current_balance += session.amount
+            locked_customer.current_balance += amount
             locked_customer.save(update_fields=['current_balance'])
             statement = get_open_statement(locked_customer)
-            statement.total_purchases += session.amount
+            statement.total_purchases += amount
             statement.closing_balance = locked_customer.current_balance
             statement.save()
 
         try:
             apply_payment_routes(
-                customer, session.merchant, session.amount, payment_source, destination,
+                customer, session.merchant, amount, payment_source, destination,
                 str(session.id), destination_account,
             )
         except RoutingError as error:
@@ -2295,13 +2324,14 @@ class ProcessBlePaymentView(APIView):
             merchant=session.merchant,
             transaction_type='purchase',
             funding_mode='credit' if payment_source == 'credit' else 'bank',
-            amount=session.amount,
+            amount=amount,
             session=session,
             statement=statement,
             description=f'BLE nearby payment at {session.merchant.name}',
             reference=str(session.id),
         )
         session.customer = customer
+        session.amount = amount  # Update session to reflect actual paid amount
         session.funding_mode = payment_source
         session.payment_source = payment_source
         session.payment_source_account = payment_source_account
@@ -2313,18 +2343,18 @@ class ProcessBlePaymentView(APIView):
         save_compliance_flags(customer, compliance)
         if compliance.requires_ctr or compliance.requires_str:
             create_regulatory_report(
-                customer, session.amount, session,
+                customer, amount, session,
                 'ctr' if compliance.requires_ctr else 'str', compliance.flags,
             )
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(f'session_{session.id}', {
             'type': 'payment_confirmed', 'session_id': str(session.id),
-            'amount': str(session.amount), 'funding_mode': payment_source,
+            'amount': str(amount), 'funding_mode': payment_source,
             'bank_used': '', 'customer_phone': customer.phone,
         })
         return Response({
             'status': 'confirmed', 'session_id': str(session.id),
-            'amount': str(session.amount), 'funding_mode': payment_source,
+            'amount': str(amount), 'funding_mode': payment_source,
             'merchant': session.merchant.name,
         })
 
