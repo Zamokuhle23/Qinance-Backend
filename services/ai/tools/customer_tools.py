@@ -24,8 +24,8 @@ def search_merchants(query='', category='', limit=10):
         ai = AIService()
         res = ai.embed(query)
         if res['success']:
-            # Semantic search using pgvector!
-            qs = qs.order_by(L2Distance('embedding', res['embedding']))
+            # Semantic search using pgvector with a relevance threshold (L2 Distance <= 1.12)
+            qs = qs.annotate(distance=L2Distance('embedding', res['embedding'])).filter(distance__lte=1.12).order_by('distance')
         else:
             # Fallback to keyword matching
             qs = qs.filter(Q(name__icontains=query) | Q(business_type__icontains=query) | Q(location__icontains=query))
