@@ -29,7 +29,7 @@ _SYSTEM_PROMPT = (
 
 def _extract_intent(message):
     msg = (message or '').lower()
-    if any(w in msg for w in ['find', 'search', 'cheapest', 'nearby', 'deals', 'deal', 'buy', 'shop', 'special', 'promotion', 'discount', 'cashback', 'restaurant', 'barber', 'pharmacy', 'supermarket', 'pizza', 'grocer']):
+    if any(w in msg for w in ['find', 'search', 'cheapest', 'nearby', 'deals', 'deal', 'buy', 'shop', 'special', 'promotion', 'discount', 'cashback', 'restaurant', 'barber', 'pharmacy', 'supermarket', 'pizza', 'grocer', 'merchant', 'merchants', 'show', 'list', 'where', 'who', 'salon', 'haircut', 'clothes']):
         return 'shopping'
     if any(w in msg for w in ['loan', 'borrow', 'credit', 'working capital', 'finance']):
         return 'loan_recommendation'
