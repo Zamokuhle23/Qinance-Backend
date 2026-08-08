@@ -64,7 +64,8 @@ class AIOrchestrator:
 
         if intent == 'shopping':
             # Customer natural language shopping routes to backend search tools.
-            if 'search_deals' in available_names:
+            msg_lower = message.lower()
+            if any(w in msg_lower for w in ['deal', 'discount', 'special', 'promotion', 'cashback', 'off']) and 'search_deals' in available_names:
                 tool_name = 'search_deals'
                 args = {'query': message[:100]}
             elif 'search_merchants' in available_names:
