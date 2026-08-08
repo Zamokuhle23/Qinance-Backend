@@ -37,8 +37,6 @@ def search_merchants(query='', category='', limit=10):
         campaigns = Campaign.objects.filter(merchant=m, status='active')
         analytics = CampaignAnalytics.objects.filter(campaign__merchant=m)
         revenue = analytics.aggregate(total=Sum('revenue'))['total'] or 0
-        # Deterministic ranking: trust + activity + revenue.
-        score = min(100, m.trust_score + campaigns.count() * 10 + int(revenue) // 500)
         results.append({
             'merchant_id': str(m.id),
             'name': m.name,
@@ -48,10 +46,14 @@ def search_merchants(query='', category='', limit=10):
             'google_maps_link': m.google_maps_link,
             'trust_score': m.trust_score,
             'active_campaigns': campaigns.count(),
-            'revenue': float(revenue),
-            'ranking_score': score,
+            'revenue': float(revenue)
         })
-    results.sort(key=lambda x: x['ranking_score'], reverse=True)
+    
+    # If no semantic query, we can sort by trust/revenue. 
+    # If there WAS a query, we MUST respect the Postgres L2 sort order (already in qs).
+    if not query:
+        results.sort(key=lambda x: x['trust_score'], reverse=True)
+
     return {'ok': True, 'data': {'merchants': results}}
 
 
