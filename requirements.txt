@@ -40,3 +40,6 @@ pyotp==2.9.0
 
 # Vertex AI SDK
 google-genai
+
+# PGVector (Semantic Search)
+pgvector==0.3.6
