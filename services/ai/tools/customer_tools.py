@@ -44,6 +44,8 @@ def search_merchants(query='', category='', limit=10):
             'name': m.name,
             'business_type': m.business_type,
             'location': m.location,
+            'description': m.description,
+            'google_maps_link': m.google_maps_link,
             'trust_score': m.trust_score,
             'active_campaigns': campaigns.count(),
             'revenue': float(revenue),
