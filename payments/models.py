@@ -48,6 +48,8 @@ class Merchant(models.Model):
     business_type     = models.CharField(max_length=100, blank=True)
     phone             = models.CharField(max_length=20, unique=True)
     location          = models.CharField(max_length=200, blank=True)
+    description       = models.TextField(blank=True)
+    google_maps_link  = models.URLField(max_length=500, blank=True)
     is_active         = models.BooleanField(default=False)
     embedding         = VectorField(dimensions=768, blank=True, null=True)
     risk_rating       = models.CharField(max_length=10, choices=RISK_RATINGS, default='low')
