@@ -108,6 +108,14 @@ class MerchantDocument(models.Model):
 
 # ── Customer ──────────────────────────────────────────────────────────────────
 
+class PublicHoliday(models.Model):
+    name = models.CharField(max_length=100)
+    holiday_date = models.DateField(unique=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.holiday_date})"
+
+
 class MerchantLoan(models.Model):
     STATUS_CHOICES = [
         ('pending', 'Pending Review'),
@@ -121,26 +129,33 @@ class MerchantLoan(models.Model):
         ('weekly', 'Weekly'),
         ('biweekly', 'Biweekly'),
     ]
+    LOAN_TYPES = [
+        ('campaign', 'Campaign Loan'),
+        ('capital', 'Working Capital Loan'),
+    ]
+    REPAYMENT_SOURCES = [
+        ('wallet', 'Qinance Wallet'),
+        ('linked', 'Linked Bank Account'),
+    ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     merchant = models.ForeignKey(Merchant, on_delete=models.CASCADE, related_name='loans')
+    loan_type = models.CharField(max_length=20, choices=LOAN_TYPES, default='capital')
     requested_amount = models.DecimalField(max_digits=12, decimal_places=2)
     approved_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
     balance_due = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
-    term_months = models.PositiveSmallIntegerField(default=6)
+    duration_days = models.IntegerField(default=40)
     repayment_frequency = models.CharField(max_length=12, choices=REPAYMENT_CHOICES, default='weekly')
+    repayment_source = models.CharField(max_length=20, choices=REPAYMENT_SOURCES, default='wallet')
+    repayment_schedule_date = models.DateField(null=True, blank=True)
+    repayment_schedule_time = models.TimeField(null=True, blank=True)
     interest_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('20.00'))
     purpose = models.CharField(max_length=250, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     applied_at = models.DateTimeField(auto_now_add=True)
     approved_at = models.DateTimeField(null=True, blank=True)
+    start_date = models.DateField(null=True, blank=True)
     due_date = models.DateField(null=True, blank=True)
-
-    @property
-    def monthly_payment(self):
-        if not self.term_months or self.balance_due <= 0:
-            return Decimal('0.00')
-        return (self.balance_due / self.term_months).quantize(Decimal('0.01'))
 
     @property
     def estimated_interest(self):
@@ -151,16 +166,58 @@ class MerchantLoan(models.Model):
         return (self.requested_amount + self.estimated_interest).quantize(Decimal('0.01'))
 
     @property
-    def estimated_installments(self):
+    def estimated_installments_count(self):
         if self.repayment_frequency == 'daily':
-            return self.term_months * 30
+            return self.duration_days
+        if self.repayment_frequency == 'weekly':
+            return max(1, self.duration_days // 5)
         if self.repayment_frequency == 'biweekly':
-            return max(1, round(self.term_months * 26 / 12))
-        return max(1, round(self.term_months * 52 / 12))
+            return max(1, self.duration_days // 10)
+        return 1
 
     @property
-    def estimated_installment(self):
-        return (self.estimated_total_repayment / self.estimated_installments).quantize(Decimal('0.01'))
+    def estimated_installment_amount(self):
+        if not self.duration_days:
+            return Decimal('0.00')
+        return (self.estimated_total_repayment / Decimal(str(self.estimated_installments_count))).quantize(Decimal('0.01'))
+
+    def process_automatic_repayment(self):
+        """
+        Attempt to deduct the installment amount from the chosen source.
+        """
+        from .routing import get_wallet, post_wallet_entry, RoutingError
+        
+        amount = self.estimated_installment_amount
+        if self.balance_due <= 0:
+            self.status = 'repaid'
+            self.save(update_fields=['status'])
+            return False, "Loan already repaid."
+
+        amount_to_deduct = min(amount, self.balance_due)
+        
+        try:
+            if self.repayment_source == 'wallet':
+                wallet = get_wallet(self.merchant)
+                if wallet.balance < amount_to_deduct:
+                    return False, f"Insufficient wallet balance. Needed E{amount_to_deduct}"
+                
+                post_wallet_entry(
+                    wallet, -amount_to_deduct, 'payment', 
+                    f'Loan Repayment - {self.get_loan_type_display()}',
+                    f'loan-repay-{self.id}-{timezone.now().timestamp()}'
+                )
+            else:
+                # Linked account simulation (would call EPS pull in production)
+                pass
+            
+            self.balance_due -= amount_to_deduct
+            if self.balance_due <= 0:
+                self.status = 'repaid'
+            self.save()
+            return True, f"Successfully deducted E{amount_to_deduct}"
+            
+        except Exception as e:
+            return False, str(e)
 
     def __str__(self):
         return f'{self.merchant.name} loan E{self.requested_amount} ({self.status})'

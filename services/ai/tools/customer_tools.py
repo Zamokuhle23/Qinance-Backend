@@ -64,9 +64,19 @@ def search_merchants(query='', category='', limit=10):
 )
 def search_deals(query='', deal_type='', limit=10):
     from campaigns.models import Campaign
-    from django.db.models import Q
+    from django.db.models import Q, F
+    from django.utils import timezone
 
-    qs = Campaign.objects.filter(status='active')
+    today = timezone.localdate()
+    qs = Campaign.objects.filter(
+        status='active',
+        start_date__lte=today,
+        end_date__gte=today
+    ).filter(
+        Q(max_redemptions=0) | Q(redemptions__lt=F('max_redemptions'))
+    ).exclude(
+        deal_type='cashback', budget__lte=0
+    )
     
     if query:
         from services.ai.ai_service import AIService
@@ -92,6 +102,8 @@ def search_deals(query='', deal_type='', limit=10):
         'cashback_percent': float(c.cashback_percent) if c.cashback_percent else None,
         'merchant_name': c.merchant.name,
         'merchant_id': str(c.merchant_id),
+        'merchant_location': c.merchant.location,
+        'google_maps_link': c.merchant.google_maps_link,
         'category': c.category,
     } for c in qs[:limit]]}}
 

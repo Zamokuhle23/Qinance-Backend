@@ -176,6 +176,23 @@ def apply_cashback(customer, merchant, amount, session):
     return cashback
 
 
+def get_working_days_end_date(start_date, duration_days):
+    """
+    Calculate the end date after N working days (excluding weekends and holidays).
+    """
+    from .models import PublicHoliday
+    holidays = set(PublicHoliday.objects.values_list('holiday_date', flat=True))
+    
+    current_date = start_date
+    days_added = 0
+    while days_added < duration_days:
+        current_date += timedelta(days=1)
+        # 0=Monday, 6=Sunday. Weekends are 5 and 6.
+        if current_date.weekday() < 5 and current_date not in holidays:
+            days_added += 1
+    return current_date
+
+
 def get_open_statement(customer):
     today = timezone.now().date()
     stmt = CreditStatement.objects.filter(
@@ -442,6 +459,17 @@ class ConfirmPaymentView(APIView):
 
         funding_mode = data['funding_mode']
         amount = session.amount
+
+        # ── Apply Campaign Discount ───────────────────────────────────────
+        campaign_id = data.get('campaign_id')
+        if campaign_id:
+            from campaigns.models import Campaign
+            campaign = Campaign.objects.filter(id=campaign_id, merchant=session.merchant, status='active').first()
+            if campaign and campaign.discount_percent:
+                discount = (amount * campaign.discount_percent / Decimal('100')).quantize(Decimal('0.01'))
+                amount -= discount
+                campaign.redemptions += 1
+                campaign.save(update_fields=['redemptions'])
 
         try:
             if funding_mode in ('wallet', 'credit', 'linked'):
@@ -823,16 +851,41 @@ class MerchantLoanListCreateView(APIView):
         merchant = self._merchant(request)
         if not merchant:
             return Response({'error': 'Active merchant account required.'}, status=403)
+        
+        # 1. Validation: No active loan
         if merchant.loans.filter(status__in=['pending', 'approved', 'active']).exists():
             return Response({'error': 'You already have an open merchant finance application.'}, status=400)
+        
         serializer = MerchantLoanSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
+        
         amount = serializer.validated_data['requested_amount']
-        frequency = serializer.validated_data.get('repayment_frequency', 'weekly')
-        if amount <= 0 or frequency not in ('daily', 'weekly', 'biweekly'):
-            return Response({'error': 'Enter a valid amount and choose daily, weekly, or biweekly repayment.'}, status=400)
-        loan = serializer.save(merchant=merchant, term_months=6, interest_rate=Decimal('20.00'))
+        if amount <= 0:
+            return Response({'error': 'Loan amount must be greater than zero.'}, status=400)
+
+        # 2. Set default terms: 20% for 40 working days
+        duration = 40
+        interest = Decimal('20.00')
+        
+        start_date = timezone.now().date()
+        due_date = get_working_days_end_date(start_date, duration)
+        
+        # 3. Save loan with new requirements
+        loan = serializer.save(
+            merchant=merchant,
+            duration_days=duration,
+            interest_rate=interest,
+            start_date=start_date,
+            due_date=due_date,
+            status='pending'
+        )
+        
+        # 4. Auto-calculate total due for convenience (usually handled in model save but good to be explicit)
+        if not loan.balance_due:
+            loan.balance_due = loan.estimated_total_repayment
+            loan.save(update_fields=['balance_due'])
+
         return Response(MerchantLoanSerializer(loan).data, status=201)
 
 

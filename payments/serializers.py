@@ -21,6 +21,7 @@ class MerchantLoanSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'merchant', 'approved_amount', 'balance_due', 'status',
             'approved_at', 'due_date', 'applied_at', 'interest_rate',
+            'duration_days', 'start_date',
         ]
 
 
@@ -121,6 +122,7 @@ class ConfirmPaymentSerializer(serializers.Serializer):
     bank           = serializers.ChoiceField(choices=BANK_CHOICES, required=False, allow_blank=True)
     jit_bank       = serializers.ChoiceField(choices=BANK_CHOICES, required=False, allow_blank=True)
     momo_number    = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    campaign_id    = serializers.UUIDField(required=False, allow_null=True)
 
 
 class RepaymentSerializer(serializers.Serializer):
