@@ -132,16 +132,39 @@ def merchant_details(merchant_id):
 @register_tool(
     'nearby_merchants',
     roles=['customer', 'admin'],
-    description='List nearby active merchants (location-based).',
+    description='List nearby active merchants based on location or precise coordinates.',
 )
-def nearby_merchants(location='', limit=10):
+def nearby_merchants(location='', lat=None, lon=None, limit=10):
     from payments.models import Merchant
+    from django.db.models import Q
+    import math
 
     qs = Merchant.objects.filter(is_active=True, kyc_approved=True)
-    if location:
+    
+    if lat is not None and lon is not None:
+        # Haversine distance or simple L2 for the hackathon
+        # We can also use pgvector if we want, but simple coord filter is enough
+        # For now, we use a simple bounding box or just order by distance if we want precision
+        # Since we have pgvector, let's use it for coordinates!
+        # (Assuming we have coordinate embeddings, but let's stick to simple math for now)
+        lat = float(lat)
+        lon = float(lon)
+        # Sort by distance from lat/lon
+        qs = qs.extra(
+            select={'distance': f"sqrt(pow(latitude - {lat}, 2) + pow(longitude - {lon}, 2))"},
+            order_by=['distance']
+        )
+    elif location:
         qs = qs.filter(location__icontains=location)
+        
     return {'ok': True, 'data': {'merchants': [
-        {'merchant_id': str(m.id), 'name': m.name, 'business_type': m.business_type, 'location': m.location}
+        {
+            'merchant_id': str(m.id), 
+            'name': m.name, 
+            'business_type': m.business_type, 
+            'location': m.location,
+            'google_maps_link': m.google_maps_link
+        }
         for m in qs[:limit]
     ]}}
 
