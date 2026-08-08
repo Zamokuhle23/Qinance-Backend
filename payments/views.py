@@ -470,6 +470,9 @@ class ConfirmPaymentView(APIView):
                 amount -= discount
                 campaign.redemptions += 1
                 campaign.save(update_fields=['redemptions'])
+                # Track usage on session
+                session.metadata['applied_campaign_id'] = str(campaign.id)
+                session.metadata['discount_applied'] = str(discount)
 
         try:
             if funding_mode in ('wallet', 'credit', 'linked'):
@@ -1651,6 +1654,8 @@ class CreateAgentSessionView(APIView):
         )
 
         return Response({
+            'session_id':       str(session.id),
+            'merchant_id':      str(merchant.id),
             'session_id':       str(session.id),
             'merchant_id':      str(merchant.id),
             'merchant_name':    merchant.name,
