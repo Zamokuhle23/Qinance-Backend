@@ -121,6 +121,10 @@ class AILog(models.Model):
     latency_ms = models.IntegerField(default=0)
     success = models.BooleanField(default=True)
     error = models.TextField(blank=True, default='')
+    cache_hit = models.BooleanField(default=False)
+    tool_used = models.CharField(max_length=100, blank=True, default='')
+    intent = models.CharField(max_length=100, blank=True, default='')
+    response_time = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
