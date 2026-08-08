@@ -55,6 +55,8 @@ class CampaignListCreateView(APIView):
             'end_date': str(c.end_date), 'max_redemptions': c.max_redemptions,
             'redemptions': c.redemptions, 'status': c.status,
             'views': c.views, 'clicks': c.clicks,
+            'merchant_location': c.merchant.location,
+            'google_maps_link': c.merchant.google_maps_link,
         }
 
 
@@ -72,6 +74,8 @@ class CampaignDetailView(APIView):
             'end_date': str(c.end_date), 'max_redemptions': c.max_redemptions,
             'redemptions': c.redemptions, 'status': c.status,
             'views': c.views, 'clicks': c.clicks,
+            'merchant_location': c.merchant.location,
+            'google_maps_link': c.merchant.google_maps_link,
         })
 
 
