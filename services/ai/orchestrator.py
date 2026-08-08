@@ -89,7 +89,41 @@ class AIOrchestrator:
                 tool_name = 'daily_briefing'
                 args = {'merchant_id': merchant_id}
         elif intent == 'campaign_advice':
-            if merchant_id and 'promotion_recommendation' in available_names:
+            msg_lower = message.lower()
+            if any(w in msg_lower for w in ['simulate', 'what if', 'would happen', 'predict']) and 'simulate_campaign' in available_names:
+                tool_name = 'simulate_campaign'
+                # Extract value (e.g. 10) and type
+                import re
+                val_match = re.search(r'(\d+)', message)
+                val = float(val_match.group(1)) if val_match else 10.0
+                dtype = 'cashback' if 'cashback' in msg_lower else 'discount'
+                args = {'merchant_id': merchant_id, 'value': val, 'deal_type': dtype}
+            elif any(w in msg_lower for w in ['create', 'run', 'start', 'launch', 'plan']) and 'create_campaign_plan' in available_names:
+                tool_name = 'create_campaign_plan'
+                # Extract title and value
+                import re
+                val_match = re.search(r'(\d+)', message)
+                val = float(val_match.group(1)) if val_match else 10.0
+                dtype = 'cashback' if 'cashback' in msg_lower else 'discount'
+                args = {
+                    'merchant_id': merchant_id, 
+                    'title': f'{int(val)}% {dtype.capitalize()} Campaign',
+                    'description': f'AI-planned {int(val)}% {dtype} for our customers.',
+                    'value': val,
+                    'deal_type': dtype
+                }
+            elif 'confirm' in msg_lower and 'confirm_campaign_creation' in available_names:
+                # This handles the "Yes, create it" response
+                # We expect the plan details to be in the context or session (simplified here)
+                tool_name = 'confirm_campaign_creation'
+                args = {
+                    'merchant_id': merchant_id,
+                    'title': context.get('pending_title', 'New Campaign'),
+                    'description': context.get('pending_description', 'Created via Ask Qinance'),
+                    'value': context.get('pending_value', 10.0),
+                    'deal_type': context.get('pending_type', 'discount')
+                }
+            elif merchant_id and 'promotion_recommendation' in available_names:
                 tool_name = 'promotion_recommendation'
                 args = {'merchant_id': merchant_id}
             elif merchant_id and 'recommend_campaign' in available_names:

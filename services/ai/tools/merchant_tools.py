@@ -111,6 +111,97 @@ def ai_loan_recommendation(merchant_id, risk_score='low', loan_range_lower=0, lo
 
 
 @register_tool(
+    'simulate_campaign',
+    roles=['merchant', 'admin'],
+    description='Simulate the impact of a campaign (e.g. 10% discount). Calculates projected ROI/Sales based on historical data.',
+)
+def simulate_campaign(merchant_id, deal_type='discount', value=10.0):
+    from payments.models import Merchant
+    from campaigns.models import Campaign, CampaignAnalytics
+    from django.db.models import Avg
+
+    m = Merchant.objects.filter(id=merchant_id).first()
+    if not m:
+        return {'ok': False, 'error': 'Merchant not found.'}
+    
+    # Get average historical ROI for this merchant or business type
+    avg_roi = CampaignAnalytics.objects.filter(campaign__merchant=m).aggregate(Avg('roi'))['roi__avg'] or 15.5
+    avg_revenue = CampaignAnalytics.objects.filter(campaign__merchant=m).aggregate(Avg('revenue'))['revenue__avg'] or 5000.0
+    
+    # Simple simulation logic
+    multiplier = 1.0 + (float(value) / 100.0)
+    projected_revenue = float(avg_revenue) * multiplier
+    projected_roi = float(avg_roi) * (1.1 if float(value) >= 10 else 1.0)
+
+    return {
+        'ok': True,
+        'data': {
+            'merchant_name': m.name,
+            'simulated_deal': f"{value}% {deal_type}",
+            'projected_revenue_increase_pct': value,
+            'projected_total_revenue': round(projected_revenue, 2),
+            'projected_roi_pct': round(projected_roi, 1),
+            'confidence_score': 85 if m.trust_score > 70 else 60
+        }
+    }
+
+
+@register_tool(
+    'create_campaign_plan',
+    roles=['merchant', 'admin'],
+    description='Create a draft campaign plan for a merchant. Returns a campaign object for confirmation.',
+)
+def create_campaign_plan(merchant_id, title, description, deal_type='discount', value=10.0):
+    from payments.models import Merchant
+    
+    m = Merchant.objects.filter(id=merchant_id).first()
+    if not m:
+        return {'ok': False, 'error': 'Merchant not found.'}
+
+    plan = {
+        'merchant_id': str(m.id),
+        'merchant_name': m.name,
+        'title': title,
+        'description': description,
+        'deal_type': deal_type,
+        'value': value,
+        'status': 'draft_plan',
+        'requires_confirmation': True
+    }
+    
+    return {'ok': True, 'data': {'plan': plan}}
+
+
+@register_tool(
+    'confirm_campaign_creation',
+    roles=['merchant', 'admin'],
+    description='Actually create the campaign in the database after merchant confirmation.',
+)
+def confirm_campaign_creation(merchant_id, title, description, deal_type='discount', value=10.0):
+    from payments.models import Merchant
+    from campaigns.models import Campaign
+    from datetime import date, timedelta
+
+    m = Merchant.objects.filter(id=merchant_id).first()
+    if not m:
+        return {'ok': False, 'error': 'Merchant not found.'}
+
+    campaign = Campaign.objects.create(
+        merchant=m,
+        title=title,
+        description=description,
+        deal_type=deal_type,
+        discount_percent=value if deal_type == 'discount' else None,
+        cashback_percent=value if deal_type == 'cashback' else None,
+        start_date=date.today(),
+        end_date=date.today() + timedelta(days=30),
+        status='active'
+    )
+    
+    return {'ok': True, 'data': {'campaign_id': str(campaign.id), 'title': campaign.title, 'status': 'Created & Active'}}
+
+
+@register_tool(
     'daily_briefing',
     roles=['merchant', 'admin'],
     description=(

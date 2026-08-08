@@ -2,6 +2,7 @@ import uuid
 from decimal import Decimal
 from django.db import models
 from django.utils import timezone
+from pgvector.django import VectorField
 
 
 class Campaign(models.Model):
@@ -49,6 +50,7 @@ class Campaign(models.Model):
     redemptions = models.PositiveIntegerField(default=0)
     applicable_products = models.TextField(blank=True)
     status = models.CharField(max_length=10, choices=STATUS, default='draft')
+    embedding = VectorField(dimensions=768, blank=True, null=True)
     views = models.PositiveIntegerField(default=0)
     clicks = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)

@@ -64,17 +64,29 @@ def search_merchants(query='', category='', limit=10):
 )
 def search_deals(query='', deal_type='', limit=10):
     from campaigns.models import Campaign
+    from django.db.models import Q
 
     qs = Campaign.objects.filter(status='active')
+    
     if query:
-        from django.db.models import Q
-        qs = qs.filter(Q(title__icontains=query) | Q(description__icontains=query) | Q(merchant__name__icontains=query))
+        from services.ai.ai_service import AIService
+        from pgvector.django import L2Distance
+        ai = AIService()
+        res = ai.embed(query)
+        if res['success']:
+            # Semantic search for deals with relevance threshold
+            qs = qs.annotate(distance=L2Distance('embedding', res['embedding'])).filter(distance__lte=1.15).order_by('distance')
+        else:
+            # Fallback
+            qs = qs.filter(Q(title__icontains=query) | Q(description__icontains=query) | Q(merchant__name__icontains=query))
+            
     if deal_type:
         qs = qs.filter(deal_type=deal_type)
 
     return {'ok': True, 'data': {'deals': [{
         'id': str(c.id),
         'title': c.title,
+        'description': c.description,
         'deal_type': c.deal_type,
         'discount_percent': float(c.discount_percent) if c.discount_percent else None,
         'cashback_percent': float(c.cashback_percent) if c.cashback_percent else None,
