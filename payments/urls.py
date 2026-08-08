@@ -45,6 +45,11 @@ urlpatterns = [
     path('credit-transactions/', views.CreditTransactionListView.as_view()),
     path('dashboard/stats/', views.DashboardStatsView.as_view()),
 
+    # Admin Merchant Loans
+    path('admin/merchants/loans/', views.AdminMerchantLoanListView.as_view()),
+    path('admin/merchants/loans/<uuid:loan_id>/analysis/', views.AdminMerchantLoanAnalysisView.as_view()),
+    path('admin/merchants/loans/<uuid:loan_id>/action/', views.AdminMerchantLoanActionView.as_view()),
+
     # Agent Banking
     path('agent/merchants/', views.NearbyAgentMerchantsView.as_view()),
     path('agent/initiate/', views.InitiateAgentTransactionView.as_view()),

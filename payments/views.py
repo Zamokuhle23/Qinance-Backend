@@ -1007,6 +1007,107 @@ class CreditTransactionListView(APIView):
         return Response(CreditTransactionSerializer(txns, many=True).data)
 
 
+class AdminMerchantLoanListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response({'error': 'Admin access required.'}, status=403)
+        loans = MerchantLoan.objects.filter(status='pending').order_by('-applied_at')
+        return Response(MerchantLoanSerializer(loans, many=True).data)
+
+
+class AdminMerchantLoanAnalysisView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, loan_id):
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response({'error': 'Admin access required.'}, status=403)
+        
+        from services.ai.orchestrator import AIOrchestrator
+        orchestrator = AIOrchestrator()
+        
+        # 1. Gather deterministic data via tool
+        from services.ai.tools.merchant_tools import ai_loan_analysis
+        analysis_data = ai_loan_analysis(loan_id)
+        if not analysis_data['ok']:
+            return Response(analysis_data, status=404)
+        
+        data = analysis_data['data']
+        
+        # 2. Ask Gemini for advice
+        prompt = (
+            f"Please analyse this loan application for merchant {data['merchant_name']}.\n"
+            f"Requested: E{data['requested_amount']}\n"
+            f"History: {data['history']['total_loans']} total loans, {data['history']['repaid_loans']} repaid.\n"
+            f"Trust Score: {data['trust_score']}\n"
+            f"Context: {data['context']['location']}. {data['context']['events_hint']}\n"
+            f"Deterministic Range: {data['deterministic_range']['min']} to {data['deterministic_range']['max']}\n\n"
+            "Based on this, suggest a specific approved amount and explain why."
+        )
+        
+        from services.ai.ai_service import AIService
+        ai = AIService()
+        res = ai.generate(prompt, feature='admin_loan_analysis', user_role='admin')
+        
+        gemini_suggestion = 0
+        if res['success']:
+            # Extract number from Gemini response (simplified for hackathon)
+            import re
+            nums = re.findall(r'E?([\d,.]+)', res['text'])
+            if nums:
+                gemini_suggestion = float(nums[0].replace(',', ''))
+        
+        # 3. Apply Comparison Logic
+        min_limit = data['deterministic_range']['min']
+        max_limit = data['deterministic_range']['max']
+        
+        final_suggested = gemini_suggestion
+        if gemini_suggestion < min_limit:
+            final_suggested = min_limit
+        elif gemini_suggestion > max_limit:
+            final_suggested = max_limit
+            
+        return Response({
+            'ok': True,
+            'analysis': data,
+            'ai_explanation': res['text'] if res['success'] else 'AI analysis unavailable.',
+            'ai_suggested_amount': round(gemini_suggestion, 2),
+            'final_recommendation': round(final_suggested, 2),
+            'status': 'success'
+        })
+
+
+class AdminMerchantLoanActionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, loan_id):
+        if not (request.user.is_staff or request.user.is_superuser):
+            return Response({'error': 'Admin access required.'}, status=403)
+        
+        loan = get_object_or_404(MerchantLoan, id=loan_id)
+        action = request.data.get('action') # approve | reject
+        approved_amount = request.data.get('amount')
+        
+        if action == 'approve':
+            if not approved_amount:
+                return Response({'error': 'Approved amount required.'}, status=400)
+            loan.status = 'approved'
+            loan.approved_amount = Decimal(str(approved_amount))
+            loan.balance_due = loan.approved_amount + (loan.approved_amount * loan.interest_rate / Decimal('100'))
+            loan.approved_at = timezone.now()
+            # Set active immediately for hackathon demo
+            loan.status = 'active' 
+            loan.save()
+            return Response({'message': f'Loan approved for E{loan.approved_amount}. Status is now ACTIVE.'})
+        elif action == 'reject':
+            loan.status = 'rejected'
+            loan.save()
+            return Response({'message': 'Loan application rejected.'})
+        
+        return Response({'error': 'Invalid action.'}, status=400)
+
+
 class DashboardStatsView(APIView):
     def get(self, request):
         confirmed = PaymentSession.objects.filter(status='confirmed')

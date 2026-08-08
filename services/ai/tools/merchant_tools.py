@@ -300,3 +300,70 @@ def promotion_recommendation(merchant_id):
             },
         }
     }
+
+
+@register_tool(
+    'ai_loan_analysis',
+    roles=['admin'],
+    description=(
+        'Analyse a pending loan application for an admin. '
+        'Gathers merchant history, trust score, and external factors. '
+        'Returns deterministic min/max range and context for Gemini.'
+    ),
+)
+def ai_loan_analysis(loan_id):
+    from payments.models import Merchant, MerchantLoan, CreditTransaction
+    from campaigns.models import Campaign, CampaignAnalytics
+    from django.db.models import Sum, Avg
+
+    loan = MerchantLoan.objects.filter(id=loan_id).first()
+    if not loan:
+        return {'ok': False, 'error': 'Loan application not found.'}
+
+    merchant = loan.merchant
+    loans = MerchantLoan.objects.filter(merchant=merchant)
+    total_loans = loans.count()
+    completed = loans.filter(status='repaid').count()
+    
+    # Calculate deterministic safety range
+    is_new = total_loans <= 1
+    if is_new:
+        min_limit = 250
+        max_limit = 500
+    else:
+        # Base on performance
+        avg_revenue = CampaignAnalytics.objects.filter(campaign__merchant=merchant).aggregate(Avg('revenue'))['revenue__avg'] or 1000
+        min_limit = float(avg_revenue) * 0.1
+        max_limit = float(avg_revenue) * 0.5
+        # Cap by trust score
+        max_limit = (max_limit * (merchant.trust_score / 100)) + 500
+
+    # Gather context
+    analytics = CampaignAnalytics.objects.filter(campaign__merchant=merchant)
+    total_revenue = analytics.aggregate(total=Sum('revenue'))['total'] or 0
+
+    return {
+        'ok': True,
+        'data': {
+            'loan_id': str(loan.id),
+            'merchant_name': merchant.name,
+            'merchant_type': merchant.business_type,
+            'trust_score': merchant.trust_score,
+            'requested_amount': float(loan.requested_amount),
+            'loan_type': loan.loan_type,
+            'history': {
+                'total_loans': total_loans,
+                'repaid_loans': completed,
+                'total_revenue': float(total_revenue),
+            },
+            'deterministic_range': {
+                'min': round(min_limit, 2),
+                'max': round(max_limit, 2),
+            },
+            'context': {
+                'location': merchant.location,
+                'events_hint': 'Check for local holiday or town events.',
+                'seasonality_hint': 'Analyse if this business type is peaking now.',
+            }
+        }
+    }
