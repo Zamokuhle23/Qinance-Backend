@@ -861,20 +861,16 @@ class MerchantLoanListCreateView(APIView):
         if merchant.loans.filter(status__in=['pending', 'approved', 'active']).exists():
             return Response({'error': 'You already have an open merchant finance application.'}, status=400)
         
+        if request.data.get('requested_amount') not in (None, '', '0', '0.00', 0):
+            return Response({'error': 'Do not choose an amount yet. Qinance will first calculate an eligible range.'}, status=400)
         payload = request.data.copy()
-        amount_was_supplied = bool(payload.get('requested_amount'))
-        if not amount_was_supplied:
-            payload['requested_amount'] = '0.00'
+        payload['requested_amount'] = '0.00'
         serializer = MerchantLoanSerializer(data=payload)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
         
         amount = serializer.validated_data['requested_amount']
         previous_count = merchant.loans.exclude(status='rejected').count()
-        if amount_was_supplied and previous_count == 0 and not Decimal('200.00') <= amount <= Decimal('500.00'):
-            return Response({'error': 'For a new merchant, loan amount must be between E200 and E500.'}, status=400)
-        if amount_was_supplied and amount <= 0:
-            return Response({'error': 'Loan amount must be greater than zero.'}, status=400)
 
         # 2. Set default terms: 20% for 40 working days
         duration = 40
