@@ -957,11 +957,8 @@ class AdminMerchantLoanOfferView(APIView):
             maximum = Decimal(str(request.data.get('maximum')))
         except Exception:
             return Response({'error': 'Valid minimum and maximum are required.'}, status=400)
-        analysis = loan.advisory_result.get('analysis', {})
-        hard_min = Decimal(str(analysis.get('deterministic_range', {}).get('min', 200)))
-        hard_max = Decimal(str(analysis.get('gemini_cap', 500)))
-        if minimum < hard_min or maximum < minimum or maximum > hard_max:
-            return Response({'error': f'Range must remain within E{hard_min} and E{hard_max}.'}, status=400)
+        if minimum <= 0 or maximum < minimum:
+            return Response({'error': 'Range must be positive and maximum must not be below minimum.'}, status=400)
         loan.offer_minimum = minimum
         loan.offer_maximum = maximum
         loan.offer_status = 'published'
