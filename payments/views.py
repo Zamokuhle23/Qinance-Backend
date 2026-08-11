@@ -10,6 +10,8 @@ from decimal import Decimal
 from datetime import timedelta
 import hashlib
 import hmac
+import threading
+from django.db import close_old_connections
 from django.db import transaction
 from django.db.models import Max
 
@@ -889,6 +891,13 @@ class MerchantLoanListCreateView(APIView):
             loan.balance_due = loan.estimated_total_repayment
             loan.save(update_fields=['balance_due'])
 
+        threading.Thread(
+            target=_generate_merchant_loan_advice,
+            args=(loan.id,),
+            daemon=True,
+            name=f'loan-advisor-{loan.id}',
+        ).start()
+
         return Response(MerchantLoanSerializer(loan).data, status=201)
 
 
@@ -1018,6 +1027,36 @@ def _can_administer_merchant_loans(user):
             user.role in ('admin', 'super_admin', 'credit_officer', 'kyc_officer', 'fraud_analyst', 'support')
         )
     )
+
+
+def _generate_merchant_loan_advice(loan_id):
+    """Run Gemini outside the POST request and persist the capped result."""
+    close_old_connections()
+    try:
+        loan = MerchantLoan.objects.get(id=loan_id)
+        from services.ai.tools.merchant_tools import ai_loan_analysis
+        from services.ai.loan_advisor import MerchantLoanAdvisor
+        context = ai_loan_analysis(loan.id)
+        if not context.get('ok'):
+            raise RuntimeError(context.get('error', 'Unable to build loan context'))
+        result = MerchantLoanAdvisor().advise(context['data'])
+        loan.advisory_result = {
+            'analysis': context['data'],
+            'advice': result['advice'],
+            'final_recommendation': result['advice'].get('suggested_loan_amount'),
+            'fallback': result.get('fallback', False),
+        }
+        loan.advisory_status = 'ready'
+        loan.save(update_fields=['advisory_result', 'advisory_status'])
+    except Exception as exc:
+        try:
+            MerchantLoan.objects.filter(id=loan_id).update(
+                advisory_status='failed', advisory_result={'error': str(exc)}
+            )
+        except Exception:
+            pass
+    finally:
+        close_old_connections()
 
 
 class AdminMerchantLoanListView(APIView):

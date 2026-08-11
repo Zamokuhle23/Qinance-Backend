@@ -382,7 +382,6 @@ def ai_loan_analysis(loan_id):
                 'years_operating': float(loan.years_operating or 0),
                 'employees_count': loan.employees_count,
                 'purpose': loan.purpose,
-                'collateral_description': loan.collateral_description,
             },
             'python_ceiling': round(python_ceiling, 2),
             'gemini_cap': gemini_cap,
