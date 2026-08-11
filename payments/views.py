@@ -923,15 +923,14 @@ class MerchantLoanSelectAmountView(APIView):
     def post(self, request, loan_id):
         merchant = Merchant.objects.filter(phone=request.user.phone, is_active=True).first()
         loan = get_object_or_404(MerchantLoan, id=loan_id, merchant=merchant, status='pending')
-        if loan.advisory_status != 'ready':
-            return Response({'error': 'Your loan range is still being calculated.'}, status=409)
+        if loan.offer_status != 'published':
+            return Response({'error': 'The administrator has not published your eligible range yet.'}, status=409)
         try:
             amount = Decimal(str(request.data.get('amount')))
         except Exception:
             return Response({'error': 'Choose a valid amount.'}, status=400)
-        analysis = loan.advisory_result.get('analysis', {})
-        minimum = Decimal(str(analysis.get('deterministic_range', {}).get('min', 200)))
-        maximum = Decimal(str(analysis.get('gemini_cap', 500)))
+        minimum = loan.offer_minimum
+        maximum = loan.offer_maximum
         if amount < minimum or amount > maximum:
             return Response({'error': f'Choose an amount between E{minimum} and E{maximum}.'}, status=400)
         with transaction.atomic():
@@ -944,6 +943,30 @@ class MerchantLoanSelectAmountView(APIView):
             wallet = get_wallet(merchant)
             post_wallet_entry(wallet, amount, 'adjustment', 'Merchant loan disbursement', f'loan-{loan.id}')
         return Response(MerchantLoanSerializer(loan).data)
+
+
+class AdminMerchantLoanOfferView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, loan_id):
+        if not _can_administer_merchant_loans(request.user):
+            return Response({'error': 'Admin access required.'}, status=403)
+        loan = get_object_or_404(MerchantLoan, id=loan_id, status='pending')
+        try:
+            minimum = Decimal(str(request.data.get('minimum')))
+            maximum = Decimal(str(request.data.get('maximum')))
+        except Exception:
+            return Response({'error': 'Valid minimum and maximum are required.'}, status=400)
+        analysis = loan.advisory_result.get('analysis', {})
+        hard_min = Decimal(str(analysis.get('deterministic_range', {}).get('min', 200)))
+        hard_max = Decimal(str(analysis.get('gemini_cap', 500)))
+        if minimum < hard_min or maximum < minimum or maximum > hard_max:
+            return Response({'error': f'Range must remain within E{hard_min} and E{hard_max}.'}, status=400)
+        loan.offer_minimum = minimum
+        loan.offer_maximum = maximum
+        loan.offer_status = 'published'
+        loan.save(update_fields=['offer_minimum', 'offer_maximum', 'offer_status'])
+        return Response({'message': 'Loan range sent to merchant.', 'minimum': minimum, 'maximum': maximum})
 
 
 # ── Repayments ────────────────────────────────────────────────────────────────
