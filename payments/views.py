@@ -1015,7 +1015,7 @@ def _can_administer_merchant_loans(user):
     return bool(
         user.is_authenticated and (
             user.is_staff or user.is_superuser or
-            user.role in ('super_admin', 'credit_officer', 'support')
+            user.role in ('admin', 'super_admin', 'credit_officer', 'kyc_officer', 'fraud_analyst', 'support')
         )
     )
 
