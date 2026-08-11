@@ -1010,11 +1010,21 @@ class CreditTransactionListView(APIView):
         return Response(CreditTransactionSerializer(txns, many=True).data)
 
 
+def _can_administer_merchant_loans(user):
+    """Match the roles allowed into the web admin dashboard."""
+    return bool(
+        user.is_authenticated and (
+            user.is_staff or user.is_superuser or
+            user.role in ('super_admin', 'credit_officer', 'support')
+        )
+    )
+
+
 class AdminMerchantLoanListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        if not (request.user.is_staff or request.user.is_superuser):
+        if not _can_administer_merchant_loans(request.user):
             return Response({'error': 'Admin access required.'}, status=403)
         loans = MerchantLoan.objects.filter(status='pending').order_by('-applied_at')
         return Response(MerchantLoanSerializer(loans, many=True).data)
@@ -1024,7 +1034,7 @@ class AdminMerchantLoanAnalysisView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, loan_id):
-        if not (request.user.is_staff or request.user.is_superuser):
+        if not _can_administer_merchant_loans(request.user):
             return Response({'error': 'Admin access required.'}, status=403)
         
         # 1. Gather deterministic data via tool
@@ -1059,7 +1069,7 @@ class AdminMerchantLoanActionView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, loan_id):
-        if not (request.user.is_staff or request.user.is_superuser):
+        if not _can_administer_merchant_loans(request.user):
             return Response({'error': 'Admin access required.'}, status=403)
         
         loan = get_object_or_404(MerchantLoan, id=loan_id)
