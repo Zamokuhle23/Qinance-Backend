@@ -1041,7 +1041,7 @@ def _can_administer_merchant_loans(user):
     )
 
 
-def _generate_merchant_loan_advice(loan_id):
+def _generate_merchant_loan_advice(loan_id, attempt=1):
     """Run Gemini outside the POST request and persist the capped result."""
     close_old_connections()
     try:
@@ -1061,9 +1061,14 @@ def _generate_merchant_loan_advice(loan_id):
         loan.advisory_status = 'ready'
         loan.save(update_fields=['advisory_result', 'advisory_status'])
     except Exception as exc:
+        if attempt < 2:
+            threading.Timer(
+                3.0, _generate_merchant_loan_advice, args=(loan_id, attempt + 1)
+            ).start()
+            return
         try:
             MerchantLoan.objects.filter(id=loan_id).update(
-                advisory_status='failed', advisory_result={'error': str(exc)}
+                advisory_status='failed', advisory_result={'error': str(exc), 'automatic': True}
             )
         except Exception:
             pass

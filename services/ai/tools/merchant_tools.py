@@ -336,11 +336,16 @@ def ai_loan_analysis(loan_id):
     monthly_revenue = float(loan.monthly_revenue or 0) or float(campaign_revenue['average'] or 0)
     monthly_expenses = float(loan.monthly_expenses or 0)
     net_cashflow = max(0.0, monthly_revenue - monthly_expenses)
-    python_ceiling = float(merchant.trust_score or 500.0)
-    python_ceiling = max(1.0, min(python_ceiling, 50000.0))
+    # New merchants receive the fixed starter band. Trust score may be a
+    # percentage (for example 90), so it must never become the loan amount.
+    if total_loans == 0:
+        python_ceiling = 500.0
+    else:
+        python_ceiling = max(500.0, float(merchant.trust_score or 500.0))
+    python_ceiling = min(python_ceiling, 50000.0)
     gemini_cap = round(python_ceiling * 1.15, 2)
-    min_limit = round(python_ceiling, 2)
-    max_limit = round(gemini_cap, 2)
+    min_limit = 200.0 if total_loans == 0 else round(python_ceiling, 2)
+    max_limit = 500.0 if total_loans == 0 else round(python_ceiling, 2)
 
     # Gather context
     analytics = CampaignAnalytics.objects.filter(campaign__merchant=merchant)
