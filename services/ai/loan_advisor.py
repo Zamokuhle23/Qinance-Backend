@@ -20,9 +20,9 @@ who may not know the merchant or its local area.
 GUARDRAILS:
 - The deterministic Python ceiling is E{python_ceiling}.
 - The absolute Gemini cap is E{gemini_cap}.
-- The merchant requested E{requested_amount}. Evaluate whether that exact
-  request is justified by the profile. Do not recommend E500 merely because
-  it is available; recommend less if the evidence supports less.
+- Merchant amount selection: {requested_amount_text}. If no amount is
+  selected, determine an advisory amount/range from the profile; do not say
+  that the merchant requested the Python ceiling.
 - suggested_loan_amount MUST stay within the policy range and must not exceed
   the requested amount unless a concrete opportunity justifies the buffer.
 - Qinance does not currently use credit scores. Do not mention a credit score;
@@ -30,6 +30,8 @@ GUARDRAILS:
 - You may use the Gemini buffer above the Python ceiling only when a concrete
   opportunity (verified event, seasonality, or measurable growth) supports it.
   State that opportunity explicitly in reasons. Do not use the buffer by default.
+- For a new merchant, the Python ceiling is E500 and the Gemini opportunity
+  cap is E575 (15% buffer). The cap is not an automatic recommendation.
 - Never approve or reject the application.
 
 LOCAL CONTEXT:
@@ -83,7 +85,10 @@ Return exactly this JSON shape:
         prompt = self.PROMPT.format(
             python_ceiling=data['python_ceiling'],
             gemini_cap=data['gemini_cap'],
-            requested_amount=data['requested_amount'] or data['python_ceiling'],
+            requested_amount_text=(
+                f"E{data['requested_amount']} requested"
+                if data['requested_amount'] else 'No amount selected; range request'
+            ),
             merchant_location=profile['location'],
             profile=json.dumps(profile),
             loan_summary=json.dumps(data['history']),
@@ -122,9 +127,10 @@ Return exactly this JSON shape:
 
         advice = self._remove_credit_score_language(result.get('data') or {})
         suggested = float(advice.get('suggested_loan_amount', 0) or 0)
-        requested = float(data['requested_amount'] or data['python_ceiling'])
+        requested_raw = float(data['requested_amount'] or 0)
+        requested = requested_raw or float(data['python_ceiling'])
         policy_min = float(data['deterministic_range']['min'])
-        policy_max = float(data['gemini_cap'] if requested > data['python_ceiling'] else requested)
+        policy_max = float(data['gemini_cap'] if not requested_raw or requested > data['python_ceiling'] else requested)
         advice['suggested_loan_amount'] = round(min(max(suggested, policy_min), policy_max), 2)
         advice['buffer_used'] = advice['suggested_loan_amount'] > float(data['python_ceiling'])
         advice['buffer_amount'] = round(
