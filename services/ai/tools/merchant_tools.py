@@ -322,21 +322,28 @@ def ai_loan_analysis(loan_id):
 
     merchant = loan.merchant
     loans = MerchantLoan.objects.filter(merchant=merchant)
-    total_loans = loans.count()
-    completed = loans.filter(status='repaid').count()
-    
-    # Calculate deterministic safety range
-    is_new = total_loans <= 1
-    if is_new:
-        min_limit = 250
-        max_limit = 500
-    else:
-        # Base on performance
-        avg_revenue = CampaignAnalytics.objects.filter(campaign__merchant=merchant).aggregate(Avg('revenue'))['revenue__avg'] or 1000
-        min_limit = float(avg_revenue) * 0.1
-        max_limit = float(avg_revenue) * 0.5
-        # Cap by trust score
-        max_limit = (max_limit * (merchant.trust_score / 100)) + 500
+    previous_loans = loans.exclude(id=loan.id)
+    total_loans = previous_loans.count()
+    completed = previous_loans.filter(status='repaid').count()
+    active = previous_loans.filter(status__in=['approved', 'active']).count()
+    defaulted = previous_loans.filter(status='rejected').count()
+
+    # Mirror the field-agent LoanAdvisor guardrails: derive a Python ceiling
+    # from repayment history, affordability, and merchant trust, then let
+    # Gemini advise only inside that ceiling.
+    campaign_revenue = CampaignAnalytics.objects.filter(campaign__merchant=merchant).aggregate(
+        total=Sum('revenue'), average=Avg('revenue')
+    )
+    monthly_revenue = float(loan.monthly_revenue or 0) or float(campaign_revenue['average'] or 0)
+    monthly_expenses = float(loan.monthly_expenses or 0)
+    net_cashflow = max(0.0, monthly_revenue - monthly_expenses)
+    trust_factor = max(0.25, min(float(merchant.trust_score or 0) / 100, 1.0))
+    affordability_ceiling = net_cashflow * 0.5 if net_cashflow else 0.0
+    history_ceiling = 500.0 + (completed * 250.0) - (defaulted * 150.0)
+    python_ceiling = max(500.0, min(max(affordability_ceiling, history_ceiling) * trust_factor, 50000.0))
+    gemini_cap = round(python_ceiling * 1.15, 2)
+    min_limit = round(min(250.0, python_ceiling), 2)
+    max_limit = round(python_ceiling, 2)
 
     # Gather context
     analytics = CampaignAnalytics.objects.filter(campaign__merchant=merchant)
@@ -354,8 +361,21 @@ def ai_loan_analysis(loan_id):
             'history': {
                 'total_loans': total_loans,
                 'repaid_loans': completed,
+                'active_loans': active,
+                'defaulted_loans': defaulted,
                 'total_revenue': float(total_revenue),
             },
+            'business_profile': {
+                'monthly_revenue': monthly_revenue,
+                'monthly_expenses': monthly_expenses,
+                'net_cashflow': round(net_cashflow, 2),
+                'years_operating': float(loan.years_operating or 0),
+                'employees_count': loan.employees_count,
+                'purpose': loan.purpose,
+                'collateral_description': loan.collateral_description,
+            },
+            'python_ceiling': round(python_ceiling, 2),
+            'gemini_cap': gemini_cap,
             'deterministic_range': {
                 'min': round(min_limit, 2),
                 'max': round(max_limit, 2),

@@ -151,6 +151,12 @@ class MerchantLoan(models.Model):
     repayment_schedule_time = models.TimeField(null=True, blank=True)
     interest_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('20.00'))
     purpose = models.CharField(max_length=250, blank=True)
+    # Applicant-provided context used by the advisory risk assessment.
+    monthly_revenue = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    monthly_expenses = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    years_operating = models.DecimalField(max_digits=5, decimal_places=1, default=Decimal('0.0'))
+    employees_count = models.PositiveIntegerField(default=0)
+    collateral_description = models.CharField(max_length=500, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     applied_at = models.DateTimeField(auto_now_add=True)
     approved_at = models.DateTimeField(null=True, blank=True)
