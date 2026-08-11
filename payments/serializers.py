@@ -9,11 +9,14 @@ class MerchantSerializer(serializers.ModelSerializer):
 
 
 class MerchantLoanSerializer(serializers.ModelSerializer):
-    monthly_payment = serializers.ReadOnlyField()
+    # Keep the API names used by the merchant UI while sourcing the actual
+    # model properties (the old field names caused serialization to raise an
+    # AttributeError after an application was created).
+    monthly_payment = serializers.ReadOnlyField(source='estimated_installment_amount')
     estimated_interest = serializers.ReadOnlyField()
     estimated_total_repayment = serializers.ReadOnlyField()
-    estimated_installments = serializers.ReadOnlyField()
-    estimated_installment = serializers.ReadOnlyField()
+    estimated_installments = serializers.ReadOnlyField(source='estimated_installments_count')
+    estimated_installment = serializers.ReadOnlyField(source='estimated_installment_amount')
 
     class Meta:
         model = MerchantLoan
