@@ -1131,7 +1131,9 @@ class AdminMerchantLoanListView(APIView):
     def get(self, request):
         if not _can_administer_merchant_loans(request.user):
             return Response({'error': 'Admin access required.'}, status=403)
-        loans = MerchantLoan.objects.filter(status='pending').order_by('-applied_at')
+        loans = MerchantLoan.objects.filter(
+            status='pending', offer_status='awaiting_admin'
+        ).order_by('-applied_at')
         return Response(MerchantLoanSerializer(loans, many=True).data)
 
 
