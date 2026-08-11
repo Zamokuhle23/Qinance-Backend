@@ -35,6 +35,7 @@ urlpatterns = [
     path('wallet/top-up/', views.WalletTopUpView.as_view()),
     path('wallet/entries/', views.WalletEntryListView.as_view()),
     path('merchant/loans/', views.MerchantLoanListCreateView.as_view()),
+    path('merchant/loans/<uuid:loan_id>/select/', views.MerchantLoanSelectAmountView.as_view()),
     # Backwards-compatible plural alias used by older merchant web builds.
     path('merchants/loans/', views.MerchantLoanListCreateView.as_view()),
 

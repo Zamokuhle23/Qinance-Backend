@@ -83,7 +83,7 @@ Return exactly this JSON shape:
         prompt = self.PROMPT.format(
             python_ceiling=data['python_ceiling'],
             gemini_cap=data['gemini_cap'],
-            requested_amount=data['requested_amount'],
+            requested_amount=data['requested_amount'] or data['python_ceiling'],
             merchant_location=profile['location'],
             profile=json.dumps(profile),
             loan_summary=json.dumps(data['history']),
@@ -122,7 +122,7 @@ Return exactly this JSON shape:
 
         advice = self._remove_credit_score_language(result.get('data') or {})
         suggested = float(advice.get('suggested_loan_amount', 0) or 0)
-        requested = float(data['requested_amount'])
+        requested = float(data['requested_amount'] or data['python_ceiling'])
         policy_min = float(data['deterministic_range']['min'])
         policy_max = float(data['gemini_cap'] if requested > data['python_ceiling'] else requested)
         advice['suggested_loan_amount'] = round(min(max(suggested, policy_min), policy_max), 2)

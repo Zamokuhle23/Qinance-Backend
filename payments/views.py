@@ -861,15 +861,19 @@ class MerchantLoanListCreateView(APIView):
         if merchant.loans.filter(status__in=['pending', 'approved', 'active']).exists():
             return Response({'error': 'You already have an open merchant finance application.'}, status=400)
         
-        serializer = MerchantLoanSerializer(data=request.data)
+        payload = request.data.copy()
+        amount_was_supplied = bool(payload.get('requested_amount'))
+        if not amount_was_supplied:
+            payload['requested_amount'] = '0.00'
+        serializer = MerchantLoanSerializer(data=payload)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
         
         amount = serializer.validated_data['requested_amount']
         previous_count = merchant.loans.exclude(status='rejected').count()
-        if previous_count == 0 and not Decimal('200.00') <= amount <= Decimal('500.00'):
+        if amount_was_supplied and previous_count == 0 and not Decimal('200.00') <= amount <= Decimal('500.00'):
             return Response({'error': 'For a new merchant, loan amount must be between E200 and E500.'}, status=400)
-        if amount <= 0:
+        if amount_was_supplied and amount <= 0:
             return Response({'error': 'Loan amount must be greater than zero.'}, status=400)
 
         # 2. Set default terms: 20% for 40 working days
@@ -911,6 +915,35 @@ class MerchantLoanListCreateView(APIView):
         if not deleted:
             return Response({'error': 'No pending application to withdraw.'}, status=404)
         return Response({'message': 'Pending loan application withdrawn.'})
+
+
+class MerchantLoanSelectAmountView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, loan_id):
+        merchant = Merchant.objects.filter(phone=request.user.phone, is_active=True).first()
+        loan = get_object_or_404(MerchantLoan, id=loan_id, merchant=merchant, status='pending')
+        if loan.advisory_status != 'ready':
+            return Response({'error': 'Your loan range is still being calculated.'}, status=409)
+        try:
+            amount = Decimal(str(request.data.get('amount')))
+        except Exception:
+            return Response({'error': 'Choose a valid amount.'}, status=400)
+        analysis = loan.advisory_result.get('analysis', {})
+        minimum = Decimal(str(analysis.get('deterministic_range', {}).get('min', 200)))
+        maximum = Decimal(str(analysis.get('gemini_cap', 500)))
+        if amount < minimum or amount > maximum:
+            return Response({'error': f'Choose an amount between E{minimum} and E{maximum}.'}, status=400)
+        with transaction.atomic():
+            loan.requested_amount = amount
+            loan.approved_amount = amount
+            loan.balance_due = amount + (amount * loan.interest_rate / Decimal('100'))
+            loan.status = 'active'
+            loan.approved_at = timezone.now()
+            loan.save()
+            wallet = get_wallet(merchant)
+            post_wallet_entry(wallet, amount, 'adjustment', 'Merchant loan disbursement', f'loan-{loan.id}')
+        return Response(MerchantLoanSerializer(loan).data)
 
 
 # ── Repayments ────────────────────────────────────────────────────────────────
