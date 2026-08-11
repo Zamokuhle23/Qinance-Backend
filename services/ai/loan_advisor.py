@@ -21,6 +21,8 @@ GUARDRAILS:
 - The deterministic Python ceiling is E{python_ceiling}.
 - The absolute Gemini cap is E{gemini_cap}.
 - suggested_loan_amount MUST be a number between E{python_ceiling} and E{gemini_cap}.
+- Qinance does not currently use credit scores. Do not mention a credit score;
+  describe E200–E500 for new merchants as the starter loan-limit policy.
 - Never approve or reject the application.
 
 LOCAL CONTEXT:
@@ -51,12 +53,22 @@ Return exactly this JSON shape:
     def __init__(self):
         self.ai_service = AIService()
 
+    @staticmethod
+    def _remove_credit_score_language(value):
+        if isinstance(value, str):
+            return (value.replace('credit score', 'deterministic loan limit')
+                         .replace('Credit score', 'Deterministic loan limit'))
+        if isinstance(value, list):
+            return [MerchantLoanAdvisor._remove_credit_score_language(item) for item in value]
+        if isinstance(value, dict):
+            return {key: MerchantLoanAdvisor._remove_credit_score_language(item) for key, item in value.items()}
+        return value
+
     def advise(self, data):
         profile = {
             'name': data['merchant_name'],
             'business_type': data['merchant_type'],
             'location': data['context']['location'] or 'Unknown',
-            'credit_score': data['python_ceiling'],
             'blacklisted': data['risk_rating'] == 'high',
             'has_active_loan': data['history']['active_loans'] > 0,
             'business_profile': data['business_profile'],
@@ -82,7 +94,7 @@ Return exactly this JSON shape:
                 'advice': {
                     'explanation': (
                         f"AI service temporarily unavailable. Based on the deterministic "
-                        f"credit ceiling of E{ceiling:.2f}, E{ceiling:.2f} is the system fallback."
+                        f"loan ceiling of E{ceiling:.2f}, E{ceiling:.2f} is the system fallback."
                     ),
                     'risk_summary': 'medium',
                     'suggested_loan_amount': ceiling,
@@ -96,7 +108,7 @@ Return exactly this JSON shape:
                 'fallback': True,
             }
 
-        advice = result.get('data') or {}
+        advice = self._remove_credit_score_language(result.get('data') or {})
         suggested = float(advice.get('suggested_loan_amount', 0) or 0)
         advice['suggested_loan_amount'] = round(
             min(max(suggested, float(data['python_ceiling'])), float(data['gemini_cap'])), 2
