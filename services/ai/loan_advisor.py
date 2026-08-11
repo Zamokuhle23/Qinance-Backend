@@ -20,19 +20,19 @@ who may not know the merchant or its local area.
 GUARDRAILS:
 - The deterministic Python ceiling is E{python_ceiling}.
 - The absolute Gemini cap is E{gemini_cap}.
-- Merchant amount selection: {requested_amount_text}. If no amount is
-  selected, determine an advisory amount/range from the profile; do not say
-  that the merchant requested the Python ceiling.
-- suggested_loan_amount MUST stay within the policy range and must not exceed
-  the requested amount unless a concrete opportunity justifies the buffer.
+- The merchant has not selected an amount. Determine an advisory eligible
+  range from the profile and explain the recommended amount within that range.
+- suggested_loan_amount MUST stay within the Python policy range unless a
+  concrete opportunity justifies using the Gemini buffer.
 - Qinance does not currently use credit scores. Do not mention a credit score;
-  describe E200–E500 for new merchants as the starter loan-limit policy.
+  describe the deterministic loan-limit policy and the merchant evidence used.
 - You may use the Gemini buffer above the Python ceiling only when a concrete
   opportunity (verified event, seasonality, or measurable growth) supports it.
   State that opportunity explicitly in reasons. Do not use the buffer by default.
-- For a new merchant, the Python ceiling is E500 and the Gemini opportunity
-  cap is E575 (15% buffer). The cap is not an automatic recommendation.
-- Never approve or reject the application.
+- For a new merchant, the baseline policy is E200–E500 and the opportunity
+  cap is E575 (15% buffer). Returning merchants use their calculated dynamic
+  ceiling and the same controlled buffer. The cap is not automatic.
+- Never approve or reject the request; provide advisory range guidance only.
 
 LOCAL CONTEXT:
 The merchant is located in {merchant_location}. Consider local events, holidays,
@@ -85,10 +85,6 @@ Return exactly this JSON shape:
         prompt = self.PROMPT.format(
             python_ceiling=data['python_ceiling'],
             gemini_cap=data['gemini_cap'],
-            requested_amount_text=(
-                f"E{data['requested_amount']} requested"
-                if data['requested_amount'] else 'No amount selected; range request'
-            ),
             merchant_location=profile['location'],
             profile=json.dumps(profile),
             loan_summary=json.dumps(data['history']),
