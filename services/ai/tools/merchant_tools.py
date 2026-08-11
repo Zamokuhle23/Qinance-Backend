@@ -328,22 +328,19 @@ def ai_loan_analysis(loan_id):
     active = previous_loans.filter(status__in=['approved', 'active']).count()
     defaulted = previous_loans.filter(status='rejected').count()
 
-    # Mirror the field-agent LoanAdvisor guardrails: derive a Python ceiling
-    # from repayment history, affordability, and merchant trust, then let
-    # Gemini advise only inside that ceiling.
+    # Match the final field-agent LoanAdvisor guardrails: the persisted trust
+    # score is the deterministic ceiling and Gemini receives only +15% room.
     campaign_revenue = CampaignAnalytics.objects.filter(campaign__merchant=merchant).aggregate(
         total=Sum('revenue'), average=Avg('revenue')
     )
     monthly_revenue = float(loan.monthly_revenue or 0) or float(campaign_revenue['average'] or 0)
     monthly_expenses = float(loan.monthly_expenses or 0)
     net_cashflow = max(0.0, monthly_revenue - monthly_expenses)
-    trust_factor = max(0.25, min(float(merchant.trust_score or 0) / 100, 1.0))
-    affordability_ceiling = net_cashflow * 0.5 if net_cashflow else 0.0
-    history_ceiling = 500.0 + (completed * 250.0) - (defaulted * 150.0)
-    python_ceiling = max(500.0, min(max(affordability_ceiling, history_ceiling) * trust_factor, 50000.0))
+    python_ceiling = float(merchant.trust_score or 500.0)
+    python_ceiling = max(1.0, min(python_ceiling, 50000.0))
     gemini_cap = round(python_ceiling * 1.15, 2)
-    min_limit = round(min(250.0, python_ceiling), 2)
-    max_limit = round(python_ceiling, 2)
+    min_limit = round(python_ceiling, 2)
+    max_limit = round(gemini_cap, 2)
 
     # Gather context
     analytics = CampaignAnalytics.objects.filter(campaign__merchant=merchant)
@@ -365,6 +362,19 @@ def ai_loan_analysis(loan_id):
                 'defaulted_loans': defaulted,
                 'total_revenue': float(total_revenue),
             },
+            'repayment_summary': {
+                'total_repayments': completed,
+                'on_time_percentage': round((completed / total_loans) * 100, 1) if total_loans else 0,
+                'chronological_loan_history_paragraphs': [
+                    (
+                        f"Loan #{idx} (Requested: E{float(item.requested_amount):.2f}, "
+                        f"Status: {item.status}, Applied: {item.applied_at.date() if item.applied_at else 'unknown'}): "
+                        f"Purpose: {item.purpose or 'not supplied'}. "
+                        f"Business revenue E{float(item.monthly_revenue):.2f}, expenses E{float(item.monthly_expenses):.2f}."
+                    )
+                    for idx, item in enumerate(loans.order_by('applied_at'), 1)
+                ],
+            },
             'business_profile': {
                 'monthly_revenue': monthly_revenue,
                 'monthly_expenses': monthly_expenses,
@@ -376,6 +386,7 @@ def ai_loan_analysis(loan_id):
             },
             'python_ceiling': round(python_ceiling, 2),
             'gemini_cap': gemini_cap,
+            'risk_rating': merchant.risk_rating,
             'deterministic_range': {
                 'min': round(min_limit, 2),
                 'max': round(max_limit, 2),

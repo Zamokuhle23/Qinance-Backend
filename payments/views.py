@@ -1035,57 +1035,22 @@ class AdminMerchantLoanAnalysisView(APIView):
         
         data = analysis_data['data']
         
-        # 2. Ask Gemini for advice
-        prompt = (
-            f"Please analyse this loan application for merchant {data['merchant_name']}.\n"
-            f"Requested: E{data['requested_amount']}\n"
-            f"History: {data['history']['total_loans']} total loans, {data['history']['repaid_loans']} repaid.\n"
-            f"Active loans: {data['history']['active_loans']}; rejected/defaulted: {data['history']['defaulted_loans']}.\n"
-            f"Trust Score: {data['trust_score']}\n"
-            f"Context: {data['context']['location']}. {data['context']['events_hint']}\n"
-            f"Business profile: monthly revenue E{data['business_profile']['monthly_revenue']}, "
-            f"monthly expenses E{data['business_profile']['monthly_expenses']}, "
-            f"net cashflow E{data['business_profile']['net_cashflow']}, "
-            f"{data['business_profile']['years_operating']} years operating, "
-            f"{data['business_profile']['employees_count']} employees.\n"
-            f"Purpose: {data['business_profile']['purpose'] or 'Not supplied'}.\n"
-            f"Collateral: {data['business_profile']['collateral_description'] or 'Not supplied'}.\n"
-            f"Python ceiling: E{data['python_ceiling']}; Gemini absolute cap: E{data['gemini_cap']}.\n"
-            f"Deterministic Range: {data['deterministic_range']['min']} to {data['deterministic_range']['max']}\n\n"
-            "Act as a credit advisor for an administrator unfamiliar with this merchant. "
-            "Suggest a specific approved amount, list missing information or risks, and explain the reasoning. "
-            "Never approve or reject the application and never recommend more than the Gemini absolute cap."
-        )
-        
-        from services.ai.ai_service import AIService
-        ai = AIService()
-        res = ai.generate(prompt, feature='admin_loan_analysis', user_role='admin')
-        
-        gemini_suggestion = 0
-        if res['success']:
-            # Extract an explicitly currency-labelled amount, rather than the
-            # first number in the narrative (which is often the loan history).
-            import re
-            nums = re.findall(r'(?:E|SZL)\s*([\d,.]+)', res['text'], flags=re.IGNORECASE)
-            if nums:
-                gemini_suggestion = float(nums[0].replace(',', ''))
-        
-        # 3. Apply Comparison Logic
+        # 2. Run the final tuned JSON advisor with deterministic fallback and
+        # post-validation guardrails.
+        from services.ai.loan_advisor import MerchantLoanAdvisor
+        advice_result = MerchantLoanAdvisor().advise(data)
+        advice = advice_result['advice']
         min_limit = data['deterministic_range']['min']
         max_limit = data['deterministic_range']['max']
-        
-        final_suggested = gemini_suggestion or min(float(data['requested_amount']), max_limit)
-        if gemini_suggestion < min_limit:
-            final_suggested = min_limit
-        elif gemini_suggestion > max_limit:
-            final_suggested = max_limit
             
         return Response({
             'ok': True,
             'analysis': data,
-            'ai_explanation': res['text'] if res['success'] else 'AI analysis unavailable.',
-            'ai_suggested_amount': round(gemini_suggestion, 2),
-            'final_recommendation': round(final_suggested, 2),
+            'ai_explanation': advice.get('explanation', 'AI analysis unavailable.'),
+            'ai_suggested_amount': round(float(advice.get('suggested_loan_amount', min_limit)), 2),
+            'final_recommendation': round(float(advice.get('suggested_loan_amount', min_limit)), 2),
+            'advice': advice,
+            'fallback': advice_result.get('fallback', False),
             'status': 'success'
         })
 
