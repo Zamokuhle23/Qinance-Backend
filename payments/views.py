@@ -866,6 +866,9 @@ class MerchantLoanListCreateView(APIView):
             return Response(serializer.errors, status=400)
         
         amount = serializer.validated_data['requested_amount']
+        previous_count = merchant.loans.exclude(status='rejected').count()
+        if previous_count == 0 and not Decimal('200.00') <= amount <= Decimal('500.00'):
+            return Response({'error': 'For a new merchant, loan amount must be between E200 and E500.'}, status=400)
         if amount <= 0:
             return Response({'error': 'Loan amount must be greater than zero.'}, status=400)
 
@@ -899,6 +902,15 @@ class MerchantLoanListCreateView(APIView):
         ).start()
 
         return Response(MerchantLoanSerializer(loan).data, status=201)
+
+    def delete(self, request):
+        merchant = self._merchant(request)
+        if not merchant:
+            return Response({'error': 'Active merchant account required.'}, status=403)
+        deleted, _ = merchant.loans.filter(status='pending').delete()
+        if not deleted:
+            return Response({'error': 'No pending application to withdraw.'}, status=404)
+        return Response({'message': 'Pending loan application withdrawn.'})
 
 
 # ── Repayments ────────────────────────────────────────────────────────────────
@@ -1118,8 +1130,12 @@ class AdminMerchantLoanActionView(APIView):
         if action == 'approve':
             if not approved_amount:
                 return Response({'error': 'Approved amount required.'}, status=400)
+            previous_count = loan.merchant.loans.exclude(id=loan.id).exclude(status='rejected').count()
+            approved_decimal = Decimal(str(approved_amount))
+            if previous_count == 0 and not Decimal('200.00') <= approved_decimal <= Decimal('500.00'):
+                return Response({'error': 'New merchant approvals must be between E200 and E500.'}, status=400)
             loan.status = 'approved'
-            loan.approved_amount = Decimal(str(approved_amount))
+            loan.approved_amount = approved_decimal
             loan.balance_due = loan.approved_amount + (loan.approved_amount * loan.interest_rate / Decimal('100'))
             loan.approved_at = timezone.now()
             # Set active immediately for hackathon demo
