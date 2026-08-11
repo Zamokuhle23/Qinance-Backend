@@ -23,6 +23,9 @@ GUARDRAILS:
 - suggested_loan_amount MUST be a number between E{python_ceiling} and E{gemini_cap}.
 - Qinance does not currently use credit scores. Do not mention a credit score;
   describe E200–E500 for new merchants as the starter loan-limit policy.
+- You may use the Gemini buffer above the Python ceiling only when a concrete
+  opportunity (verified event, seasonality, or measurable growth) supports it.
+  State that opportunity explicitly in reasons. Do not use the buffer by default.
 - Never approve or reject the application.
 
 LOCAL CONTEXT:
@@ -102,6 +105,8 @@ Return exactly this JSON shape:
                     'reasons': ['AI unavailable; deterministic ceiling used as fallback.'],
                     'strengths': [],
                     'weaknesses': [],
+                    'buffer_used': False,
+                    'buffer_amount': 0,
                 },
                 'tokens': 0,
                 'latency_ms': 0,
@@ -112,6 +117,10 @@ Return exactly this JSON shape:
         suggested = float(advice.get('suggested_loan_amount', 0) or 0)
         advice['suggested_loan_amount'] = round(
             min(max(suggested, float(data['python_ceiling'])), float(data['gemini_cap'])), 2
+        )
+        advice['buffer_used'] = advice['suggested_loan_amount'] > float(data['python_ceiling'])
+        advice['buffer_amount'] = round(
+            max(0, advice['suggested_loan_amount'] - float(data['python_ceiling'])), 2
         )
         return {
             'success': True,
