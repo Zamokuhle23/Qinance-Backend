@@ -333,8 +333,8 @@ def ai_loan_analysis(loan_id):
     campaign_revenue = CampaignAnalytics.objects.filter(campaign__merchant=merchant).aggregate(
         total=Sum('revenue'), average=Avg('revenue')
     )
-    monthly_revenue = float(loan.monthly_revenue or 0) or float(campaign_revenue['average'] or 0)
-    monthly_expenses = float(loan.monthly_expenses or 0)
+    monthly_revenue = float(merchant.monthly_revenue or 0) or float(campaign_revenue['average'] or 0)
+    monthly_expenses = float(merchant.monthly_expenses or 0)
     net_cashflow = max(0.0, monthly_revenue - monthly_expenses)
     # New merchants receive the fixed starter band. Trust score may be a
     # percentage (for example 90), so it must never become the loan amount.
@@ -375,7 +375,7 @@ def ai_loan_analysis(loan_id):
                         f"Loan #{idx} (Requested: E{float(item.requested_amount):.2f}, "
                         f"Status: {item.status}, Applied: {item.applied_at.date() if item.applied_at else 'unknown'}): "
                         f"Purpose: {item.purpose or 'not supplied'}. "
-                        f"Business revenue E{float(item.monthly_revenue):.2f}, expenses E{float(item.monthly_expenses):.2f}."
+                        f"Current business profile revenue E{monthly_revenue:.2f}, expenses E{monthly_expenses:.2f}."
                     )
                     for idx, item in enumerate(loans.order_by('applied_at'), 1)
                 ],
@@ -384,8 +384,8 @@ def ai_loan_analysis(loan_id):
                 'monthly_revenue': monthly_revenue,
                 'monthly_expenses': monthly_expenses,
                 'net_cashflow': round(net_cashflow, 2),
-                'years_operating': float(loan.years_operating or 0),
-                'employees_count': loan.employees_count,
+                'years_operating': float(merchant.years_operating or 0),
+                'employees_count': merchant.employees_count,
                 'purpose': loan.purpose,
             },
             'python_ceiling': round(python_ceiling, 2),

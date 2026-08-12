@@ -23,6 +23,10 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     business_type = serializers.CharField(write_only=True, required=False, allow_blank=True)
     location = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    monthly_revenue = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=0)
+    monthly_expenses = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=0)
+    years_operating = serializers.DecimalField(max_digits=5, decimal_places=1, required=False, default=0)
+    employees_count = serializers.IntegerField(required=False, min_value=0, default=0)
     bank = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     password = serializers.CharField(
@@ -41,6 +45,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             'password',
             'business_type',
             'location',
+            'monthly_revenue', 'monthly_expenses', 'years_operating', 'employees_count',
             'bank',
         ]
 
@@ -58,6 +63,7 @@ class RegisterSerializer(serializers.ModelSerializer):
         business_type = validated_data.pop('business_type', '')
         location = validated_data.pop('location', '')
         bank = validated_data.pop('bank', '')
+        profile_data = {key: validated_data.pop(key, 0) for key in ('monthly_revenue', 'monthly_expenses', 'years_operating', 'employees_count')}
 
         user = User.objects.create_user(
             password=password,
@@ -74,6 +80,7 @@ class RegisterSerializer(serializers.ModelSerializer):
                 location=location,
                 is_active=False,
                 kyc_approved=False,
+                **profile_data,
             )
         else:
             Customer.objects.create(

@@ -242,6 +242,49 @@ class MerchantDetailView(APIView):
         return Response(MerchantSerializer(merchant).data)
 
 
+class MerchantProfileView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _merchant(self, request):
+        return Merchant.objects.filter(phone=request.user.phone, is_active=True).first()
+
+    def get(self, request):
+        merchant = self._merchant(request)
+        if not merchant:
+            return Response({'error': 'Active merchant account required.'}, status=403)
+        return Response(MerchantSerializer(merchant).data)
+
+    def patch(self, request):
+        merchant = self._merchant(request)
+        if not merchant:
+            return Response({'error': 'Active merchant account required.'}, status=403)
+        allowed = ('business_type', 'location', 'description', 'monthly_revenue', 'monthly_expenses', 'years_operating', 'employees_count')
+        changes = {field: request.data[field] for field in allowed if field in request.data}
+        merchant.pending_profile_changes = changes
+        merchant.save(update_fields=['pending_profile_changes'])
+        return Response({'message': 'Profile changes submitted for evidence review.', 'pending_changes': changes}, status=202)
+
+
+class AdminMerchantProfileReviewView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, merchant_id):
+        if not _can_administer_merchant_loans(request.user):
+            return Response({'error': 'Admin access required.'}, status=403)
+        merchant = get_object_or_404(Merchant, id=merchant_id)
+        changes = merchant.pending_profile_changes or {}
+        if not changes:
+            return Response({'error': 'No pending profile changes.'}, status=404)
+        if request.data.get('action') == 'approve':
+            for field, value in changes.items(): setattr(merchant, field, value)
+            merchant.pending_profile_changes = {}
+            merchant.save()
+            return Response(MerchantSerializer(merchant).data)
+        merchant.pending_profile_changes = {}
+        merchant.save(update_fields=['pending_profile_changes'])
+        return Response({'message': 'Profile changes rejected.'})
+
+
 class MerchantDueDiligenceView(APIView):
     """
     Run due diligence checks on a merchant before activation.
