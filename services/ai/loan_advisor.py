@@ -35,11 +35,11 @@ GUARDRAILS:
 - Returning merchants use their calculated dynamic
   ceiling and the same controlled buffer. The cap may be used when the evidence
   supports additional repayment capacity.
-- Never approve or reject the request; provide advisory range guidance only.
 
 LOCAL CONTEXT:
 The merchant is located in {merchant_location}. Consider local events, holidays,
-market days, and seasonal opportunities, but list any such assumptions explicitly.
+market days, and seasonal opportunities, in the duration of the loan that may increase
+the merchant's ability to repay or affordability, such as increase in demand due to local events/festivals but list any such assumptions explicitly.
 
 MERCHANT PROFILE:
 {profile}
