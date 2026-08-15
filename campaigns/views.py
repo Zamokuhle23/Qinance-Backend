@@ -1,4 +1,5 @@
 import json
+from datetime import date, timedelta
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -7,6 +8,16 @@ from django.db.models import Q
 
 from .models import Campaign, CampaignAnalytics, MerchantAISummary, AILog, SavedDeal, FavouriteMerchant
 from payments.models import Merchant, Customer
+
+
+def _can_manage_campaign(request, merchant):
+    user = request.user
+    return (
+        user.is_authenticated and (
+            user.is_staff or user.is_superuser or
+            (getattr(user, 'role', '') == 'merchant' and user.phone == merchant.phone)
+        )
+    )
 
 
 class CampaignListCreateView(APIView):
@@ -25,6 +36,10 @@ class CampaignListCreateView(APIView):
     def post(self, request):
         merchant_id = request.data.get('merchant_id')
         merchant = get_object_or_404(Merchant, id=merchant_id)
+        if not _can_manage_campaign(request, merchant):
+            return Response({'error': 'Only the merchant owner can manage this campaign.'}, status=403)
+        start_date = request.data.get('start_date') or date.today()
+        end_date = request.data.get('end_date') or (date.today() + timedelta(days=30))
         campaign = Campaign.objects.create(
             merchant=merchant,
             title=request.data.get('title', ''),
@@ -35,8 +50,8 @@ class CampaignListCreateView(APIView):
             discount_percent=request.data.get('discount_percent'),
             cashback_percent=request.data.get('cashback_percent'),
             budget=request.data.get('budget', 0),
-            start_date=request.data.get('start_date'),
-            end_date=request.data.get('end_date'),
+            start_date=start_date,
+            end_date=end_date,
             max_redemptions=request.data.get('max_redemptions', 0),
             applicable_products=request.data.get('applicable_products', ''),
             status=request.data.get('status', 'active'),
@@ -78,6 +93,28 @@ class CampaignDetailView(APIView):
             'google_maps_link': c.merchant.google_maps_link,
         })
 
+    def patch(self, request, campaign_id):
+        campaign = get_object_or_404(Campaign, id=campaign_id)
+        if not _can_manage_campaign(request, campaign.merchant):
+            return Response({'error': 'Only the merchant owner can edit this campaign.'}, status=403)
+        allowed = {
+            'title', 'description', 'category', 'deal_type', 'goal',
+            'discount_percent', 'cashback_percent', 'budget', 'start_date',
+            'end_date', 'max_redemptions', 'applicable_products', 'status',
+        }
+        for field in allowed:
+            if field in request.data:
+                setattr(campaign, field, request.data[field])
+        campaign.save()
+        return Response(CampaignListCreateView()._serialize(campaign))
+
+    def delete(self, request, campaign_id):
+        campaign = get_object_or_404(Campaign, id=campaign_id)
+        if not _can_manage_campaign(request, campaign.merchant):
+            return Response({'error': 'Only the merchant owner can delete this campaign.'}, status=403)
+        campaign.delete()
+        return Response({'ok': True})
+
 
 class CampaignTrackView(APIView):
     """Track campaign views/clicks."""
@@ -95,13 +132,11 @@ class CampaignTrackView(APIView):
 class MerchantCampaignsView(APIView):
     """List campaigns for a specific merchant."""
     def get(self, request, merchant_id):
+        merchant = get_object_or_404(Merchant, id=merchant_id)
+        if not _can_manage_campaign(request, merchant):
+            return Response({'error': 'Only the merchant owner can view campaign management.'}, status=403)
         qs = Campaign.objects.filter(merchant_id=merchant_id)
-        return Response([{
-            'id': str(c.id), 'title': c.title, 'deal_type': c.deal_type,
-            'status': c.status, 'budget': str(c.budget),
-            'start_date': str(c.start_date), 'end_date': str(c.end_date),
-            'views': c.views, 'clicks': c.clicks, 'redemptions': c.redemptions,
-        } for c in qs])
+        return Response([CampaignListCreateView()._serialize(c) for c in qs])
 
 
 class MerchantAISummaryView(APIView):

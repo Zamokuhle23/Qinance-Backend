@@ -93,10 +93,19 @@ class AIOrchestrator:
                 args = {'merchant_id': merchant_id}
         elif intent == 'campaign_advice':
             msg_lower = message.lower()
-            if any(w in msg_lower for w in ['simulate', 'what if', 'would happen', 'predict']) and 'simulate_campaign' in available_names:
+            import re
+            campaign_id_match = re.search(r'\b[0-9a-f]{8}-[0-9a-f-]{27}\b', msg_lower)
+            campaign_id = campaign_id_match.group(0) if campaign_id_match else context.get('campaign_id')
+            if any(w in msg_lower for w in ['delete', 'remove', 'cancel']) and campaign_id and 'delete_campaign' in available_names:
+                tool_name = 'delete_campaign'
+                args = {'merchant_id': merchant_id, 'campaign_id': campaign_id}
+            elif any(w in msg_lower for w in ['pause', 'resume', 'activate', 'deactivate']) and campaign_id and 'update_campaign' in available_names:
+                tool_name = 'update_campaign'
+                new_status = 'paused' if 'pause' in msg_lower else ('active' if 'resume' in msg_lower or 'activate' in msg_lower else 'ended')
+                args = {'merchant_id': merchant_id, 'campaign_id': campaign_id, 'status': new_status}
+            elif any(w in msg_lower for w in ['simulate', 'what if', 'would happen', 'predict']) and 'simulate_campaign' in available_names:
                 tool_name = 'simulate_campaign'
                 # Extract value (e.g. 10) and type
-                import re
                 val_match = re.search(r'(\d+)', message)
                 val = float(val_match.group(1)) if val_match else 10.0
                 dtype = 'cashback' if 'cashback' in msg_lower else 'discount'
@@ -104,7 +113,6 @@ class AIOrchestrator:
             elif any(w in msg_lower for w in ['create', 'run', 'start', 'launch', 'plan']) and 'create_campaign_plan' in available_names:
                 tool_name = 'create_campaign_plan'
                 # Extract title and value
-                import re
                 val_match = re.search(r'(\d+)', message)
                 val = float(val_match.group(1)) if val_match else 10.0
                 dtype = 'cashback' if 'cashback' in msg_lower else 'discount'
@@ -117,7 +125,6 @@ class AIOrchestrator:
                 }
             elif 'confirm' in msg_lower and 'confirm_campaign_creation' in available_names:
                 # Check for manual location pinning: "... at location -26.49,31.36"
-                import re
                 loc_match = re.search(r'location ([\d\.-]+),([\d\.-]+)', message)
                 if loc_match and 'set_merchant_location' in available_names:
                     lat, lon = loc_match.groups()
@@ -165,11 +172,17 @@ class AIOrchestrator:
 
         # Do not send a successful confirmation through the shopping-oriented
         # Gemini response path. The campaign has already been created.
-        if tool_name == 'confirm_campaign_creation' and tool_result and tool_result.get('ok'):
+        if tool_name in ('confirm_campaign_creation', 'update_campaign', 'delete_campaign') and tool_result and tool_result.get('ok'):
             campaign = tool_result.get('data', {})
+            if tool_name == 'confirm_campaign_creation':
+                reply = f"Campaign '{campaign.get('title', args['title'])}' is now active with a {args['value']:g}% {args['deal_type']}."
+            elif tool_name == 'delete_campaign':
+                reply = f"Campaign '{campaign.get('title', 'campaign')}' was deleted."
+            else:
+                reply = f"Campaign '{campaign.get('title', 'campaign')}' is now {campaign.get('status', args.get('status', 'updated'))}."
             return {
                 'success': True,
-                'reply': f"Campaign '{campaign.get('title', args['title'])}' is now active with a {args['value']:g}% {args['deal_type']}.",
+                'reply': reply,
                 'intent': intent,
                 'tool_used': tool_name,
                 'tool_data': campaign,

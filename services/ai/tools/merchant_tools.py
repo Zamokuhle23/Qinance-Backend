@@ -202,6 +202,50 @@ def confirm_campaign_creation(merchant_id, title, description, deal_type='discou
 
 
 @register_tool(
+    'update_campaign',
+    roles=['merchant', 'admin'],
+    description='Update a merchant campaign status or basic details.',
+)
+def update_campaign(merchant_id, campaign_id, status=None, title=None, description=None, value=None):
+    from campaigns.models import Campaign
+
+    campaign = Campaign.objects.filter(id=campaign_id, merchant_id=merchant_id).first()
+    if not campaign:
+        return {'ok': False, 'error': 'Campaign not found for this merchant.'}
+    if status:
+        if status not in dict(Campaign.STATUS):
+            return {'ok': False, 'error': 'Invalid campaign status.'}
+        campaign.status = status
+    if title:
+        campaign.title = title
+    if description is not None:
+        campaign.description = description
+    if value is not None:
+        if campaign.deal_type == 'cashback':
+            campaign.cashback_percent = value
+        else:
+            campaign.discount_percent = value
+    campaign.save()
+    return {'ok': True, 'data': {'campaign_id': str(campaign.id), 'title': campaign.title, 'status': campaign.status}}
+
+
+@register_tool(
+    'delete_campaign',
+    roles=['merchant', 'admin'],
+    description='Permanently delete a merchant campaign.',
+)
+def delete_campaign(merchant_id, campaign_id):
+    from campaigns.models import Campaign
+
+    campaign = Campaign.objects.filter(id=campaign_id, merchant_id=merchant_id).first()
+    if not campaign:
+        return {'ok': False, 'error': 'Campaign not found for this merchant.'}
+    title = campaign.title
+    campaign.delete()
+    return {'ok': True, 'data': {'campaign_id': str(campaign_id), 'title': title, 'status': 'Deleted'}}
+
+
+@register_tool(
     'set_merchant_location',
     roles=['merchant', 'admin'],
     description='Update the merchant business location using precise coordinates.',
