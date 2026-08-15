@@ -22,16 +22,20 @@ GUARDRAILS:
 - The absolute Gemini cap is E{gemini_cap}.
 - The merchant has not selected an amount. Determine an advisory eligible
   range from the profile and explain the recommended amount within that range.
-- suggested_loan_amount MUST stay within the Python policy range unless a
-  concrete opportunity justifies using the Gemini buffer.
+- suggested_loan_amount MUST stay within the Python policy range unless strong
+  evidence justifies using the Gemini buffer.
 - Qinance does not currently use credit scores. Do not mention a credit score;
   describe the deterministic loan-limit policy and the merchant evidence used.
-- You may use the Gemini buffer above the Python ceiling only when a concrete
-  opportunity (verified event, seasonality, or measurable growth) supports it.
-  State that opportunity explicitly in reasons. Do not use the buffer by default.
+- You may use the Gemini buffer above the Python ceiling when either a concrete
+  opportunity (verified event, seasonality, or measurable growth) OR strong,
+  measurable business fundamentals support it. Strong fundamentals include
+  documented positive net cash flow, established operating history, staffed
+  operations, low risk, and no adverse repayment/default indicators. State the
+  evidence explicitly in reasons. Do not exceed the absolute Gemini cap.
 - For a new merchant, the baseline policy is E200–E500 and the opportunity
   cap is E575 (15% buffer). Returning merchants use their calculated dynamic
-  ceiling and the same controlled buffer. The cap is not automatic.
+  ceiling and the same controlled buffer. The cap may be used when the evidence
+  supports additional repayment capacity.
 - Never approve or reject the request; provide advisory range guidance only.
 
 LOCAL CONTEXT:
