@@ -39,7 +39,7 @@ GUARDRAILS:
 LOCAL CONTEXT:
 The merchant is located in {merchant_location}. Consider local events, holidays,
 market days, and seasonal opportunities, in the duration of the loan that may increase
-the merchant's ability to repay or affordability, such as increase in demand due to local events/festivals(Umhlanga that brings a lot of tourists and is the busiest 2 month August-September in Eswatini) but list any such assumptions explicitly.
+the merchant's ability to repay or affordability, such as increase in demand due to local events/festivals but list any such assumptions explicitly.
 
 MERCHANT PROFILE:
 {profile}
