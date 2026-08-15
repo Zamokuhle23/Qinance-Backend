@@ -30,6 +30,9 @@ _SYSTEM_PROMPT = (
 
 def _extract_intent(message):
     msg = (message or '').lower()
+    # Confirmation contains shopping words such as "discount"; it must win.
+    if 'confirm campaign' in msg:
+        return 'campaign_advice'
     if any(w in msg for w in ['find', 'search', 'cheapest', 'nearby', 'deals', 'deal', 'buy', 'shop', 'special', 'promotion', 'discount', 'cashback', 'restaurant', 'barber', 'pharmacy', 'supermarket', 'pizza', 'grocer', 'merchant', 'merchants', 'show', 'list', 'where', 'who', 'salon', 'haircut', 'clothes']):
         return 'shopping'
     if any(w in msg for w in ['loan', 'borrow', 'credit', 'working capital', 'finance']):
@@ -127,10 +130,15 @@ class AIOrchestrator:
                 val_match = re.search(r'(\d+)%', message)
                 val = float(val_match.group(1)) if val_match else context.get('pending_value', 10.0)
                 dtype = 'cashback' if 'cashback' in msg_lower else 'discount'
+                title_match = re.search(
+                    r'confirm\s+campaign\s*:\s*(.+?)\s+for\s+\d+(?:\.\d+)?%',
+                    message,
+                    re.IGNORECASE,
+                )
                 
                 args = {
                     'merchant_id': merchant_id,
-                    'title': context.get('pending_title', 'New Campaign'),
+                    'title': title_match.group(1).strip() if title_match else context.get('pending_title', 'New Campaign'),
                     'description': context.get('pending_description', 'Created via Ask Qinance'),
                     'value': val,
                     'deal_type': dtype
@@ -154,6 +162,21 @@ class AIOrchestrator:
                 args = {'campaign_id': campaign_id}
 
         tool_result = registry.execute_tool(tool_name, role, args) if tool_name else None
+
+        # Do not send a successful confirmation through the shopping-oriented
+        # Gemini response path. The campaign has already been created.
+        if tool_name == 'confirm_campaign_creation' and tool_result and tool_result.get('ok'):
+            campaign = tool_result.get('data', {})
+            return {
+                'success': True,
+                'reply': f"Campaign '{campaign.get('title', args['title'])}' is now active with a {args['value']:g}% {args['deal_type']}.",
+                'intent': intent,
+                'tool_used': tool_name,
+                'tool_data': campaign,
+                'tokens': 0,
+                'latency_ms': 0,
+            }
+
         tool_block = self._format_tool_result(tool_result)
 
         prompt = (
