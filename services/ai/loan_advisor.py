@@ -32,8 +32,7 @@ GUARDRAILS:
   documented positive net cash flow, established operating history, staffed
   operations, low risk, and no adverse repayment/default indicators. State the
   evidence explicitly in reasons. Do not exceed the absolute Gemini cap.
-- For a new merchant, the baseline policy is E200–E500 and the opportunity
-  cap is E575 (15% buffer). Returning merchants use their calculated dynamic
+- Returning merchants use their calculated dynamic
   ceiling and the same controlled buffer. The cap may be used when the evidence
   supports additional repayment capacity.
 - Never approve or reject the request; provide advisory range guidance only.
