@@ -6,6 +6,7 @@ Gemini to explain the results. Gemini never sees raw database data.
 
 import json
 import logging
+import re
 
 from .ai_service import AIService
 from .tools import registry
@@ -30,6 +31,8 @@ _SYSTEM_PROMPT = (
 
 def _extract_intent(message):
     msg = (message or '').lower()
+    if re.search(r'\b[0-9a-f]{8}-[0-9a-f-]{27}\b', msg) and any(w in msg for w in ['delete', 'remove', 'cancel', 'pause', 'activate']):
+        return 'campaign_advice'
     # Confirmation contains shopping words such as "discount"; it must win.
     if 'confirm campaign' in msg:
         return 'campaign_advice'
@@ -59,6 +62,8 @@ class AIOrchestrator:
     def handle(self, message, role='merchant', context=None):
         context = context or {}
         intent = _extract_intent(message)
+        if context.get('campaign_id') and any(w in message.lower() for w in ['delete', 'remove', 'cancel', 'pause', 'activate']):
+            intent = 'campaign_advice'
         available = registry.list_tools_for_role(role)
         available_names = [t['name'] for t in available]
 
