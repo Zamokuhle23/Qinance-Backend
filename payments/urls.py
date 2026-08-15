@@ -36,6 +36,8 @@ urlpatterns = [
     path('wallet/entries/', views.WalletEntryListView.as_view()),
     path('merchant/loans/', views.MerchantLoanListCreateView.as_view()),
     path('merchant/profile/', views.MerchantProfileView.as_view()),
+    path('merchant/profile/documents/', views.MerchantDocumentView.as_view()),
+    path('admin/merchant-profile/documents/', views.AdminMerchantDocumentsView.as_view()),
     path('admin/merchants/<uuid:merchant_id>/profile/review/', views.AdminMerchantProfileReviewView.as_view()),
     path('merchant/loans/<uuid:loan_id>/select/', views.MerchantLoanSelectAmountView.as_view()),
     # Backwards-compatible plural alias used by older merchant web builds.

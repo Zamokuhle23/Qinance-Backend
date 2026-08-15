@@ -4,6 +4,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.parsers import MultiPartParser, FormParser
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 from decimal import Decimal
@@ -27,6 +28,7 @@ from .models import (
     AgentTransaction, MerchantAgentProfile, AgentSession,
     CustomerDeviceSecret, PendingSettlement,
     LinkedMoMoAccount, MoMoTransaction, LinkedAccount, WalletEntry, MerchantLoan,
+    MerchantDocument,
 )
 from .routing import (
     RoutingError, apply_payment_routes, credit_is_available, get_wallet,
@@ -263,6 +265,87 @@ class MerchantProfileView(APIView):
         merchant.pending_profile_changes = changes
         merchant.save(update_fields=['pending_profile_changes'])
         return Response({'message': 'Profile changes submitted for evidence review.', 'pending_changes': changes}, status=202)
+
+
+class MerchantDocumentView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def _merchant(self, request):
+        return Merchant.objects.filter(phone=request.user.phone, is_active=True).first()
+
+    @staticmethod
+    def _serialize(document, request):
+        return {
+            'id': str(document.id),
+            'document_type': document.document_type,
+            'status': document.status,
+            'uploaded_at': document.uploaded_at,
+            'file_name': document.file.name.rsplit('/', 1)[-1],
+            'url': request.build_absolute_uri(document.file.url),
+        }
+
+    def get(self, request):
+        merchant = self._merchant(request)
+        if not merchant:
+            return Response({'error': 'Active merchant account required.'}, status=403)
+        documents = MerchantDocument.objects.filter(merchant=merchant).order_by('-uploaded_at')
+        return Response([self._serialize(document, request) for document in documents])
+
+    def post(self, request):
+        merchant = self._merchant(request)
+        if not merchant:
+            return Response({'error': 'Active merchant account required.'}, status=403)
+        document_type = request.data.get('document_type', 'other')
+        allowed = {choice[0] for choice in MerchantDocument.DOC_TYPES}
+        document_file = request.FILES.get('file')
+        if document_type not in allowed:
+            return Response({'error': 'Invalid business document type.'}, status=400)
+        if not document_file:
+            return Response({'error': 'A file is required.'}, status=400)
+        MerchantDocument.objects.filter(merchant=merchant, document_type=document_type).delete()
+        document = MerchantDocument.objects.create(
+            merchant=merchant,
+            document_type=document_type,
+            file=document_file,
+            status='pending',
+        )
+        return Response(self._serialize(document, request), status=201)
+
+
+class AdminMerchantDocumentsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @staticmethod
+    def _serialize(document, request):
+        return {
+            'id': str(document.id),
+            'merchant_id': str(document.merchant_id),
+            'merchant_name': document.merchant.name,
+            'document_type': document.document_type,
+            'status': document.status,
+            'uploaded_at': document.uploaded_at,
+            'file_name': document.file.name.rsplit('/', 1)[-1],
+            'url': request.build_absolute_uri(document.file.url),
+        }
+
+    def get(self, request):
+        if not _can_administer_merchant_loans(request.user):
+            return Response({'error': 'Admin access required.'}, status=403)
+        status_filter = request.query_params.get('status', 'pending')
+        documents = MerchantDocument.objects.select_related('merchant').filter(status=status_filter)
+        return Response([self._serialize(document, request) for document in documents])
+
+    def post(self, request):
+        if not _can_administer_merchant_loans(request.user):
+            return Response({'error': 'Admin access required.'}, status=403)
+        document = get_object_or_404(MerchantDocument, id=request.data.get('document_id'))
+        action = request.data.get('action')
+        if action not in ('approve', 'reject'):
+            return Response({'error': 'Action must be approve or reject.'}, status=400)
+        document.status = 'approved' if action == 'approve' else 'rejected'
+        document.save(update_fields=['status'])
+        return Response(self._serialize(document, request))
 
 
 class AdminMerchantProfileReviewView(APIView):
@@ -908,6 +991,10 @@ class MerchantLoanListCreateView(APIView):
             return Response({'error': 'Do not choose an amount yet. Qinance will first calculate an eligible range.'}, status=400)
         payload = request.data.copy()
         payload['requested_amount'] = '0.00'
+        # The purpose is optional. Keep empty submissions as an empty string
+        # because the database column is NOT NULL (and CharField's implicit
+        # default is None when no default is declared on the model).
+        payload['purpose'] = (payload.get('purpose') or '').strip()
         serializer = MerchantLoanSerializer(data=payload)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
