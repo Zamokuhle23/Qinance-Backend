@@ -198,7 +198,16 @@ def confirm_campaign_creation(merchant_id, title, description, deal_type='discou
         status='active'
     )
     
-    return {'ok': True, 'data': {'campaign_id': str(campaign.id), 'title': campaign.title, 'status': 'Created & Active'}}
+    return {
+        'ok': True,
+        'data': {
+            'campaign_id': str(campaign.id),
+            'title': campaign.title,
+            'status': 'Created & Active',
+            'location_pinned': m.latitude is not None and m.longitude is not None,
+            'settings_hint': 'Add a business location in Merchant > Business profile.' if m.latitude is None or m.longitude is None else None,
+        },
+    }
 
 
 @register_tool(

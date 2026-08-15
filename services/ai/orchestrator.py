@@ -181,6 +181,8 @@ class AIOrchestrator:
             campaign = tool_result.get('data', {})
             if tool_name == 'confirm_campaign_creation':
                 reply = f"Campaign '{campaign.get('title', args['title'])}' is now active with a {args['value']:g}% {args['deal_type']}."
+                if not campaign.get('location_pinned'):
+                    reply += ' Location pinning was skipped; add a business location under Merchant > Business profile when ready.'
             elif tool_name == 'delete_campaign':
                 reply = f"Campaign '{campaign.get('title', 'campaign')}' was deleted."
             else:
