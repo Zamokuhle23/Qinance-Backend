@@ -375,6 +375,16 @@ class PaymentRoutingTests(APITestCase):
         self.assertEqual(len(listed.data), 1)
         self.assertEqual(listed.data[0]['purpose'], 'Buy stock')
 
+    def test_merchant_can_apply_without_a_purpose(self):
+        self.client.force_authenticate(self.merchant_user)
+        created = self.client.post('/api/merchant/loans/', {
+            'requested_amount': '0.00',
+            'repayment_frequency': 'weekly',
+        }, format='json')
+
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data['purpose'], '')
+
     def test_merchant_cannot_open_two_loan_applications(self):
         self.client.force_authenticate(self.merchant_user)
         application = {

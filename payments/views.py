@@ -1002,8 +1002,8 @@ class MerchantLoanListCreateView(APIView):
         amount = serializer.validated_data['requested_amount']
         previous_count = merchant.loans.exclude(status='rejected').count()
 
-        # 2. Set default terms: 20% for 40 working days
-        duration = 40
+        # 2. Set default terms: 20% for 60 working days
+        duration = 60
         interest = Decimal('20.00')
         
         start_date = timezone.now().date()
